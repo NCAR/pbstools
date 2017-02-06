@@ -23,13 +23,17 @@ EOF
 exit
 }
 
-# First, check for project in ENV variable or positional variable
-if [[ -z $PBS_ACCOUNT ]]; then
-	if [[ ! -z $1 ]] && [[ $1 != -* ]]; then
-		PBS_ACCOUNT=$1
-		shift
-	else
+# First, check for project in positional argument, then environment variable
+if [[ ! -z $1 ]] && [[ $1 != -* ]]; then
+	PBS_ACCOUNT=$1
+	shift
+fi
+
+if [[ $@ != *-A* ]]; then
+	if [[ -z $PBS_ACCOUNT ]]; then
 		usage
+	else
+		PBSARGS="-A ${PBS_ACCOUNT}"
 	fi
 fi
 
@@ -39,7 +43,7 @@ fi
 
 # Create default list of arguments
 PBSARGS="-I -l select=${NODES}:ncpus=${CPUS}:mpiprocs=${MPIPROCS}	\
-			-l walltime=${WALLTIME} -q ${QUEUE} -A ${PBS_ACCOUNT}"
+			-l walltime=${WALLTIME} -q ${QUEUE} ${PBSARGS}"
 
 # Submit job request and put any user requests second to override defaults
 qsub $PBSARGS $@
