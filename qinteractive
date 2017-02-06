@@ -1,0 +1,45 @@
+#!/bin/bash
+
+# Here are the default settings at the moment
+NODES=1
+CPUS=1
+MPIPROCS=1
+QUEUE=small
+WALLTIME=3600
+
+usage () {
+cat << EOF
+Usage: qinteractive account [PBS options]
+
+This command will start an interactive job on the small queue using one node
+by default. You must provide an account to submit to, unless you have the
+"PBS_ACCOUNT" environment variable set to contain your project code.
+
+Any other arguments submitted to the script will be forwarded to the qsub
+command, enabling you to override script defaults (e.g., walltime).
+
+Current PBS_ACCOUNT value = $PBS_ACCOUNT
+EOF
+exit
+}
+
+# First, check for project in ENV variable or positional variable
+if [[ -z $PBS_ACCOUNT ]]; then
+	if [[ ! -z $1 ]] && [[ $1 != -* ]]; then
+		PBS_ACCOUNT=$1
+		shift
+	else
+		usage
+	fi
+fi
+
+if [[ $@ == *--help* ]]; then
+	usage
+fi
+
+# Create default list of arguments
+PBSARGS="-I -l select=${NODES}:ncpus=${CPUS}:mpiprocs=${MPIPROCS}	\
+			-l walltime=${WALLTIME} -q ${QUEUE} -A ${PBS_ACCOUNT}"
+
+# Submit job request and put any user requests second to override defaults
+qsub $PBSARGS $@
