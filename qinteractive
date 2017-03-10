@@ -4,7 +4,7 @@
 NODES=1
 CPUS=1
 MPIPROCS=1
-QUEUE=small
+QUEUE=share
 WALLTIME=3600
 
 usage () {
