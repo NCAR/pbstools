@@ -9,41 +9,69 @@ WALLTIME=3600
 
 usage () {
 cat << EOF
-Usage: qinteractive account [PBS options]
+Usage: qinteractive [PBS options] 
 
-This command will start an interactive job on the small queue using one node
-by default. You must provide an account to submit to, unless you have the
-"PBS_ACCOUNT" environment variable set to contain your project code.
-
-Any other arguments submitted to the script will be forwarded to the qsub
+This command will start an interactive job on the share queue using one core
+by default. Any arguments submitted to the script will be forwarded to the qsub
 command, enabling you to override script defaults (e.g., walltime).
+
+You have three ways of selecting an account to use for the submission:
+
+1. Use the PBS -A [account] command line argument
+2. Set the PBS_ACCOUNT environment variable
+3. Let qinteractive randomly select from your active project list
 
 Current PBS_ACCOUNT value = $PBS_ACCOUNT
 EOF
 exit
 }
 
-# First, check for project in positional argument, then environment variable
-if [[ ! -z $1 ]] && [[ $1 != -* ]]; then
-	PBS_ACCOUNT=$1
-	shift
-fi
+PBSOPT="$@"
 
-if [[ $@ != *-A* ]]; then
+# Parse command line arguments
+for n in $PBSOPT; do
+	case $n in
+		--help)
+			usage
+			;;
+		-A*)
+			if [[ $n == -A ]]; then
+				READVAL=account
+			else
+				JOB_ACCOUNT=${n/-A/}
+			fi
+			;;
+		*)
+			if [[ $READVAL == account ]]; then
+				JOB_ACCOUNT=$n
+				READVAL=
+			fi
+			;;
+	esac
+done
+
+# If JOB_ACCOUNT is still not set, then use defaults
+if [[ -z $JOB_ACCOUNT ]]; then
 	if [[ -z $PBS_ACCOUNT ]]; then
-		usage
+		JOB_ACCOUNT=$(/ncar/opt/sam/sam_validate.py $USER | grep -m1 True | cut -d ',' -f 1)
 	else
-		PBSARGS="-A ${PBS_ACCOUNT}"
+		JOB_ACCOUNT=$PBS_ACCOUNT
 	fi
-fi
 
-if [[ $@ == *--help* ]]; then
-	usage
+	PBSARGS="-A $JOB_ACCOUNT"
 fi
 
 # Create default list of arguments
 PBSARGS="-I -l select=${NODES}:ncpus=${CPUS}:mpiprocs=${MPIPROCS}	\
 			-l walltime=${WALLTIME} -q ${QUEUE} ${PBSARGS}"
 
+echo -e "Submitting interactive job to PBS using account $JOB_ACCOUNT ...\n"
+
+if [[ ! -z $PBSOPT ]]; then
+	echo -e "Requested custom PBS options:\n    $PBSOPT\n"
+
+	PBSARGS="$PBSARGS $PBSOPT"
+fi
+
 # Submit job request and put any user requests second to override defaults
-qsub $PBSARGS $@
+qsub $PBSARGS
