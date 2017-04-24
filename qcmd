@@ -1,0 +1,154 @@
+#!/bin/bash
+
+handle_log () {
+	if [[ ! -z $QCMD_TPID ]]; then
+		kill $QCMD_TPID
+	fi
+
+	if [[ -f $QCMD_LOG ]]; then
+		if [[ ! -z $LOGPATH ]]; then
+			echo -e "\n\nWriting output to specified log file at:"
+			echo "    $LOGPATH"
+			echo -e "\nQCMD: $1" >> $QCMD_LOG
+			mv $QCMD_LOG $LOGPATH
+		else
+			rm -f $QCMD_LOG
+		fi
+	fi
+}
+
+clean_up () {
+	if [[ ! -z $QCMD_JOB ]]; then
+		echo -e "\nTerminating job $QCMD_JOB"
+		qdel $QCMD_JOB
+		rm -f ~/.qcmd.script
+		handle_log "Job terminated before completion"
+	fi
+	exit 2
+}
+
+trap clean_up SIGHUP SIGINT SIGQUIT SIGTERM
+
+# Here are the default settings at the moment
+NODES=1
+CPUS=1
+MPIPROCS=1
+QUEUE=share
+WALLTIME=3600
+
+usage () {
+cat << EOF
+Usage: qcmd [PBS options] -- executable [arguments]
+
+This script will run a command/executable on the share queue using one core
+by default. Any arguments submitted to the script will be forwarded to the qsub
+command, enabling you to override script defaults (e.g., walltime). Note that
+commands run using qcmd will *not* have interactive terminal support. Please
+use qinteractive or qsub -I for interactive jobs.
+
+You have three ways of selecting an account to use for the submission:
+
+1. Use the PBS -A [account] command line argument
+2. Set the PBS_ACCOUNT environment variable
+3. Let qinteractive randomly select from your active project list
+
+Current PBS_ACCOUNT value = $PBS_ACCOUNT
+EOF
+exit $1
+}
+
+# Parse command line arguments
+ARGV="$@"
+PBSOPT="${ARGV%%-- *}"
+EXECMD="${ARGV##*-- }"
+
+for n in $PBSOPT; do
+	case $n in
+		--help)
+			usage 0
+			;;
+		-A*)
+			if [[ $n == -A ]]; then
+				READVAL=account
+			else
+				JOB_ACCOUNT=${n/-A/}
+			fi
+			;;
+		-o*)
+			if [[ $n == -o ]]; then
+				READVAL=logpath
+			else
+				LOGPATH=${n/-o/}
+			fi
+			;;
+		-e*)
+			echo "Note: separate output and error log files are not supported by qcmd"
+			;;
+		*)
+			case $READVAL in
+				account)
+					JOB_ACCOUNT=$n
+				;;
+				logpath)
+					LOGPATH=$n
+				;;
+			esac
+			READVAL=
+			;;
+	esac
+done
+
+if [[ $ARGV != *"-- "* ]]; then
+	echo "Error: no command specified!"
+	usage 1
+fi
+
+# If JOB_ACCOUNT is still not set, then use defaults
+if [[ -z $JOB_ACCOUNT ]]; then
+	if [[ -z $PBS_ACCOUNT ]]; then
+		JOB_ACCOUNT=$(/ncar/opt/sam/sam_validate.py $USER | grep -m1 True | cut -d ',' -f 1)
+	else
+		JOB_ACCOUNT=$PBS_ACCOUNT
+	fi
+
+	PBSARGS="-A $JOB_ACCOUNT"
+fi
+
+# Create default list of arguments
+PBSARGS="-l select=${NODES}:ncpus=${CPUS}:mpiprocs=${MPIPROCS}	\
+			-l walltime=${WALLTIME} -q ${QUEUE} ${PBSARGS}"
+
+echo "Submitting command to PBS using account ${JOB_ACCOUNT}:"
+echo -e "    $EXECMD\n"
+
+# Put any user requests second to override defaults
+if [[ ! -z $PBSOPT ]]; then
+	echo -e "Requested custom PBS options:\n    $PBSOPT\n"
+
+	PBSARGS="$PBSARGS $PBSOPT"
+fi
+
+# Submit job request using temp script and write output to home directory
+echo "$EXECMD" > ~/.qcmd.script
+QCMD_JOB=$(qsub $PBSARGS -j oe -k oe -N run/.qcmd ~/.qcmd.script)
+QCMD_LOG=~/.qcmd.o${QCMD_JOB%.*}
+rm ~/.qcmd.script
+
+echo -e "Waiting for job $QCMD_JOB to start ... \n\n"
+
+while [[ ! -f $QCMD_LOG ]]; do
+sleep 0.1
+done
+
+# Follow job output
+tail -f $QCMD_LOG &
+QCMD_TPID=$!
+
+# When job is done, exit from tail
+while [[ $? == 0 ]]; do
+	sleep 5
+	qstat $QCMD_JOB >& /dev/null
+done
+
+# Clean up
+handle_log "Job exited normally"
