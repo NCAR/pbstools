@@ -21,7 +21,7 @@ clean_up () {
 	if [[ ! -z $QCMD_JOB ]]; then
 		echo -e "\nTerminating job $QCMD_JOB"
 		qdel $QCMD_JOB
-		rm -f ~/.qcmd.script
+		rm -f $CMDSCRIPT
 		handle_log "Job terminated before completion"
 	fi
 	exit 2
@@ -31,26 +31,27 @@ trap clean_up SIGHUP SIGINT SIGQUIT SIGTERM
 
 # Here are the default settings at the moment
 NODES=1
-CPUS=1
-MPIPROCS=1
-QUEUE=share
+CPUS=36
+MPIPROCS=36
+QUEUE=regular
 WALLTIME=3600
 
 usage () {
 cat << EOF
 Usage: qcmd [PBS options] -- executable [arguments]
 
-This script will run a command/executable on the share queue using one core
+This script will run a command/executable on the regular queue using one node
 by default. Any arguments submitted to the script will be forwarded to the qsub
 command, enabling you to override script defaults (e.g., walltime). Note that
 commands run using qcmd will *not* have interactive terminal support. Please
-use qinteractive or qsub -I for interactive jobs.
+use qinteractive or qsub -I for interactive jobs. Jobs created by qcmd will be
+provided with a login node environment, enabling activities like compilation.
 
 You have three ways of selecting an account to use for the submission:
 
 1. Use the PBS -A [account] command line argument
 2. Set the PBS_ACCOUNT environment variable
-3. Let qinteractive randomly select from your active project list
+3. Let qcmd randomly select from your active project list
 
 Current PBS_ACCOUNT value = $PBS_ACCOUNT
 EOF
@@ -115,8 +116,9 @@ if [[ -z $JOB_ACCOUNT ]]; then
 fi
 
 # Create default list of arguments
-PBSARGS="-l select=${NODES}:ncpus=${CPUS}:mpiprocs=${MPIPROCS}	\
-			-l walltime=${WALLTIME} -q ${QUEUE} ${PBSARGS}"
+PBSARGS="-l select=${NODES}:ncpus=${CPUS}:mpiprocs=${MPIPROCS}	    \
+			-l walltime=${WALLTIME} -q ${QUEUE} -l inception=login  \
+            ${PBSARGS}"
 
 echo "Submitting command to PBS using account ${JOB_ACCOUNT}:"
 echo -e "    $EXECMD\n"
@@ -128,11 +130,30 @@ if [[ ! -z $PBSOPT ]]; then
 	PBSARGS="$PBSARGS $PBSOPT"
 fi
 
+# If running in a PBS job, use original shell
+if [[ ! -z $PBS_O_SHELL ]]; then
+	JOBSHELL=$PBS_O_SHELL
+else
+	JOBSHELL=$SHELL
+fi
+
 # Submit job request using temp script and write output to home directory
-echo "$EXECMD" > ~/.qcmd.script
-QCMD_JOB=$(qsub $PBSARGS -j oe -k oe -N run/.qcmd ~/.qcmd.script)
+CMDSCRIPT=~/.qcmd.script.$$
+cat > $CMDSCRIPT << EOF
+#!$JOBSHELL
+$EXECMD
+EOF
+
+# Handle qsub errors
+QCMD_JOB=$(qsub $PBSARGS -j oe -k oe -N run/.qcmd $CMDSCRIPT)
+
+if [[ $? != 0 ]]; then
+    echo "Error: qsub could not successfully submit job. Exiting..."
+    exit 3
+fi
+
 QCMD_LOG=~/.qcmd.o${QCMD_JOB%.*}
-rm ~/.qcmd.script
+rm $CMDSCRIPT
 
 echo -e "Waiting for job $QCMD_JOB to start ... \n\n"
 
