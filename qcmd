@@ -1,30 +1,40 @@
 #!/bin/bash
 
-handle_log () {
-	if [[ ! -z $QCMD_TPID ]]; then
-		kill $QCMD_TPID
-	fi
+handle_logs () {
+    if [[ ! -z $QCMD_TPID ]]; then
+        kill $QCMD_TPID
+    fi
 
-	if [[ -f $QCMD_LOG ]]; then
-		if [[ ! -z $LOGPATH ]]; then
-			echo -e "\n\nWriting output to specified log file at:"
-			echo "    $LOGPATH"
-			echo -e "\nQCMD: $1" >> $QCMD_LOG
-			mv $QCMD_LOG $LOGPATH
-		else
-			rm -f $QCMD_LOG
-		fi
-	fi
+    if [[ -f $QCMD_LOG ]]; then
+        if [[ ! -z $LOGPATH ]]; then
+            echo -e "\n\nWriting output to specified log file at:"
+            echo "    $LOGPATH"
+            echo -e "\nQCMD: $1" >> $QCMD_LOG
+            mv $QCMD_LOG $LOGPATH
+        else
+            rm -f $QCMD_LOG
+        fi
+    fi
+    
+    rm -f $CMDSCRIPT $JOBIDFILE
+}
+
+check_job () {
+    if ! kill -0 $QCMD_SPID >& /dev/null; then
+        echo "Error: PBS could not successfully start job. Exiting..."
+        exit 1
+    fi
+
+    sleep 1
 }
 
 clean_up () {
-	if [[ ! -z $QCMD_JOB ]]; then
-		echo -e "\nTerminating job $QCMD_JOB"
-		qdel $QCMD_JOB
-		rm -f $CMDSCRIPT
-		handle_log "Job terminated before completion"
-	fi
-	exit 2
+    sleep 5
+    if [[ ! -z $QCMD_JOB ]]; then
+        echo -e "\nqcmd job $QCMD_JOB terminated"
+        handle_logs "Job terminated before completion"
+    fi
+    exit 2
 }
 
 trap clean_up SIGHUP SIGINT SIGQUIT SIGTERM
@@ -35,6 +45,7 @@ CPUS=36
 MPIPROCS=36
 QUEUE=regular
 WALLTIME=3600
+JOB_ACCOUNT=
 
 usage () {
 cat << EOF
@@ -64,60 +75,60 @@ PBSOPT="${ARGV%%-- *}"
 EXECMD="${ARGV##*-- }"
 
 for n in $PBSOPT; do
-	case $n in
-		--help)
-			usage 0
-			;;
-		-A*)
-			if [[ $n == -A ]]; then
-				READVAL=account
-			else
-				JOB_ACCOUNT=${n/-A/}
-			fi
-			;;
-		-o*)
-			if [[ $n == -o ]]; then
-				READVAL=logpath
-			else
-				LOGPATH=${n/-o/}
-			fi
-			;;
-		-e*)
-			echo "Note: separate output and error log files are not supported by qcmd"
-			;;
-		*)
-			case $READVAL in
-				account)
-					JOB_ACCOUNT=$n
-				;;
-				logpath)
-					LOGPATH=$n
-				;;
-			esac
-			READVAL=
-			;;
-	esac
+    case $n in
+        --help)
+            usage 0
+            ;;
+        -A*)
+            if [[ $n == -A ]]; then
+                READVAL=account
+            else
+                JOB_ACCOUNT=${n/-A/}
+            fi
+            ;;
+        -o*)
+            if [[ $n == -o ]]; then
+                READVAL=logpath
+            else
+                LOGPATH=${n/-o/}
+            fi
+            ;;
+        -e*)
+            echo "Note: separate output and error log files are not supported by qcmd"
+            ;;
+        *)
+            case $READVAL in
+                account)
+                    JOB_ACCOUNT=$n
+                ;;
+                logpath)
+                    LOGPATH=$n
+                ;;
+            esac
+            READVAL=
+            ;;
+    esac
 done
 
 if [[ $ARGV != *"-- "* ]]; then
-	echo "Error: no command specified!"
-	usage 1
+    echo "Error: no command specified!"
+    usage 1
 fi
 
 # If JOB_ACCOUNT is still not set, then use defaults
 if [[ -z $JOB_ACCOUNT ]]; then
-	if [[ -z $PBS_ACCOUNT ]]; then
-		JOB_ACCOUNT=$(/ncar/opt/sam/sam_validate.py $USER | grep -m1 True | cut -d ',' -f 1)
-	else
-		JOB_ACCOUNT=$PBS_ACCOUNT
-	fi
+    if [[ -z $PBS_ACCOUNT ]]; then
+        JOB_ACCOUNT=$(/ncar/opt/sam/sam_validate.py $USER | grep -m1 True | cut -d ',' -f 1)
+    else
+        JOB_ACCOUNT=$PBS_ACCOUNT
+    fi
 
-	PBSARGS="-A $JOB_ACCOUNT"
+    PBSARGS="-A $JOB_ACCOUNT"
 fi
 
 # Create default list of arguments
-PBSARGS="-l select=${NODES}:ncpus=${CPUS}:mpiprocs=${MPIPROCS}	    \
-			-l walltime=${WALLTIME} -q ${QUEUE} -l inception=login  \
+PBSARGS="-l select=${NODES}:ncpus=${CPUS}:mpiprocs=${MPIPROCS}      \
+            -l walltime=${WALLTIME} -q ${QUEUE} -l inception=login  \
             ${PBSARGS}"
 
 echo "Submitting command to PBS using account ${JOB_ACCOUNT}:"
@@ -125,51 +136,60 @@ echo -e "    $EXECMD\n"
 
 # Put any user requests second to override defaults
 if [[ ! -z $PBSOPT ]]; then
-	echo -e "Requested custom PBS options:\n    $PBSOPT\n"
+    echo -e "Requested custom PBS options:\n    $PBSOPT\n"
 
-	PBSARGS="$PBSARGS $PBSOPT"
+    PBSARGS="$PBSARGS $PBSOPT"
 fi
 
 # If running in a PBS job, use original shell
 if [[ ! -z $PBS_O_SHELL ]]; then
-	JOBSHELL=$PBS_O_SHELL
+    JOBSHELL=$PBS_O_SHELL
 else
-	JOBSHELL=$SHELL
+    JOBSHELL=$SHELL
 fi
 
 # Submit job request using temp script and write output to home directory
 CMDSCRIPT=~/.qcmd.script.$$
+JOBIDFILE=~/.qcmd.jobid.$$
 cat > $CMDSCRIPT << EOF
 #!$JOBSHELL
 $EXECMD
 EOF
 
-# Handle qsub errors
-QCMD_JOB=$(qsub $PBSARGS -j oe -k oe -N run/.qcmd $CMDSCRIPT)
+# Submit job in background and then get job ID
+qsub $PBSARGS -j oe -k oe -W block=true -N run/.qcmd $CMDSCRIPT > $JOBIDFILE &
+QCMD_SPID=$!
 
-if [[ $? != 0 ]]; then
-    echo "Error: qsub could not successfully submit job. Exiting..."
-    exit 3
+while [[ ! -s $JOBIDFILE ]]; do
+    check_job
+done
+
+QCMD_JOB=$(cat $JOBIDFILE)
+
+# Check that job ID was produced
+if [[ $QCMD_JOB != *.chadmin? ]]; then
+    echo $QCMD_JOB
+    echo "Error: error in qsub submission. Exiting ..."
+    exit 1
+else
+    QCMD_LOG=~/.qcmd.o${QCMD_JOB%.*}
 fi
-
-QCMD_LOG=~/.qcmd.o${QCMD_JOB%.*}
-rm $CMDSCRIPT
 
 echo -e "Waiting for job $QCMD_JOB to start ... \n\n"
 
 while [[ ! -f $QCMD_LOG ]]; do
-sleep 0.1
+    check_job
 done
 
 # Follow job output
-tail -f $QCMD_LOG &
+tail -n +1 -f $QCMD_LOG &
 QCMD_TPID=$!
 
-# When job is done, exit from tail
-while [[ $? == 0 ]]; do
-	sleep 5
-	qstat $QCMD_JOB >& /dev/null
-done
+# Wait for the job to finish and give a little time to empty buffer
+wait $QCMD_SPID
+JOBCODE=$?
+sleep 5
 
 # Clean up
-handle_log "Job exited normally"
+handle_logs "Job exited normally"
+exit $JOBCODE
