@@ -167,12 +167,12 @@ done
 QCMD_JOB=$(cat $JOBIDFILE)
 
 # Check that job ID was produced
-if [[ $QCMD_JOB != *.chadmin? ]]; then
+if [[ ! $QCMD_JOB =~ ^[0-9]+.* ]]; then
     echo $QCMD_JOB
     echo "Error: error in qsub submission. Exiting ..."
     exit 1
 else
-    QCMD_LOG=~/.qcmd.o${QCMD_JOB%.*}
+    QCMD_LOG=~/.qcmd.o${QCMD_JOB%%.*}
 fi
 
 echo -e "Waiting for job $QCMD_JOB to start ... \n\n"
