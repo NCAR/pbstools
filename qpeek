@@ -70,5 +70,7 @@ IOMOM=$(qstat -n1 $JOBID | cut -d '/' -f 1)
 IOMOM=${IOMOM##* }
 
 # Pull log file content
-READCMD="bash -c \"${READCMD} /var/spool/pbs/spool/${JOBID}.chadmin1.${LOGFILE} 2> /dev/null\""
+#READCMD="bash -c \"${READCMD} /var/spool/pbs/spool/${JOBID}.chadmin1.${LOGFILE} 2> /dev/null\""
+# job identifier string changed after PBS / SLES update outage 
+READCMD="bash -c \"${READCMD} /var/spool/pbs/spool/${JOBID}.chadmin1.ib0.cheyenne.ucar.edu.${LOGFILE} 2> /dev/null\""
 ssh -t $IOMOM $READCMD 2> /dev/null
