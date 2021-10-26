@@ -16,12 +16,12 @@ handle_logs () {
         fi
     fi
     
-    rm -f $QCMD_SCRIPT $QCMD_IDFILE
+    rm $QCMD_SCRIPT $QCMD_IDFILE
 }
 
 check_job () {
     if ! kill -0 $QCMD_SPID >& /dev/null; then
-        echo "Error: PBS could not successfully start job. Exiting..."
+        >&2 echo "Error: PBS could not successfully start job. Exiting..."
         exit 1
     fi
 
@@ -29,13 +29,24 @@ check_job () {
 }
 
 clean_up () {
-    sleep 5
-    if [[ ! -z $QCMD_JOB ]]; then
-        echo -e "\nqcmd job $QCMD_JOB terminated"
+    if [[ -n $QCMD_SPID ]]; then
+        kill $QCMD_SPID
+        >&2 echo "qcmd job terminated $QCMD_JOB"
         handle_logs "Job terminated before completion"
+    else
+        rm -f $QCMD_SCRIPT $QCMD_IDFILE $QCMD_PROCFILE
     fi
-    exit 2
+
+    exit 1
 }
+
+# Throttle and then check for too many on node
+QCMD_ALLOW=$(pgrep -u $USER qcmd | xargs ps --no-headers -o pid --sort=etime -p | head -n 5 | xargs)
+
+if [[ " $QCMD_ALLOW " != *" $$ "* ]]; then
+    >&2 echo "Error: already at max qcmd job count (5)"
+    exit 1
+fi
 
 trap clean_up SIGHUP SIGINT SIGQUIT SIGTERM
 
@@ -94,7 +105,7 @@ for n in $PBSOPT; do
             fi
             ;;
         -e*)
-            echo "Note: separate output and error log files are not supported by qcmd"
+            >&2 echo "Note: separate output and error log files are not supported by qcmd"
             ;;
         *)
             case $READVAL in
@@ -111,7 +122,7 @@ for n in $PBSOPT; do
 done
 
 if [[ $ARGV != *"-- "* ]]; then
-    echo "Error: no command specified!"
+    >&2 echo "Error: no command specified!"
     usage 1
 fi
 
@@ -159,7 +170,7 @@ $EXECMD
 EOF
 
 # Submit job in background and then get job ID
-qsub $PBSARGS -j oe -k oed -o $QCMD_LOG -W block=true -N qcmd $QCMD_SCRIPT > $QCMD_IDFILE &
+qsub $PBSARGS -V -j oe -k oed -o $QCMD_LOG -W block=true -N qcmd $QCMD_SCRIPT > $QCMD_IDFILE &
 QCMD_SPID=$!
 
 while [[ ! -s $QCMD_IDFILE ]]; do
@@ -171,8 +182,8 @@ QCMD_JOB=$(cat $QCMD_IDFILE)
 # Check that job ID was produced
 if [[ ! $QCMD_JOB =~ ^[0-9]+.* ]]; then
     echo $QCMD_JOB
-    echo "Error: error in qsub submission. Exiting ..."
-    exit 1
+    >&2 echo "Error: error in qsub submission. Exiting ..."
+    clean_up
 fi
 
 echo -e "Waiting for job $QCMD_JOB to start ... \n\n"
