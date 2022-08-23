@@ -134,8 +134,8 @@ fi
 for opt in "${!pbs_opts[@]}"; do
     if [[ $opt == -l* ]]; then
         qsub_args="$qsub_args ${opt}=${pbs_opts["$opt"]}"
-    elif [[ $opt == -q ]] && [[ ${pbs_opts["$opt"]} != *@* ]]; then
-        qsub_args="$qsub_args $opt ${pbs_opts["$opt"]}@$pbs_server"
+    elif [[ $opt == -q ]]; then
+        qsub_args="$qsub_args $opt ${pbs_opts["$opt"]%@*}@$pbs_server"
     else
         qsub_args="$qsub_args $opt ${pbs_opts["$opt"]}"
     fi
