@@ -1,0 +1,62 @@
+#!/bin/bash
+
+function usage {
+cat << EOF
+Usage: $(basename $0) [PBS options] 
+
+This command will start an interactive job on the ${pbs_opts[-q]} queue using one core
+by default. Any arguments submitted to the script will be forwarded to the qsub
+command, enabling you to override script defaults (e.g., walltime). In addition
+to the standard PBS options, this command provides the following short resource
+flags:
+
+    --nchunks       [CHUNK COUNT]
+    --ntasks        [MPI TASKS PER CHUNK]
+    --nthreads      [SMP THREADS PER CHUNK]
+    --mem           [MEMORY PER CHUNK]
+    --ngpus         [GPUS PER CHUNK]
+    --cpu           [CPU TYPE]
+    --gpu           [GPU TYPE]
+
+Note that heteorogenous resource requests are not possible using the short-form
+options. Use a standard "-l select=" flag for heteorogenous jobs.
+
+You have two ways of selecting an account to use for the submission:
+
+1. Use the PBS -A [account] command line argument
+2. Set the $acc_var environment variable
+
+If you do not set an account to use, a random project will be chosen from the 
+list of valid projects for your username. It is best to set an account!
+
+Current $acc_var value = ${!acc_var}
+
+EOF
+exit
+}
+
+# Call parse_opts to construct PBS resource string
+source ../util/parse_opts
+
+# Submit job using collected parameters
+echo -e "Submitting interactive job to PBS ..."
+
+if [[ -n $DISPLAY ]]; then
+    # Test display to avoid qsub error
+    if [[ -n "$(xauth list $DISPLAY)" ]]; then
+        qsub_args="-X $qsub_args"
+        echo -e "Setting display for X forwarding ...\n"
+    else
+        echo -e "Display not available; X forwarding disabled ...\n"
+    fi
+else
+    echo -e "No display; X forwarding disabled ...\n"
+fi
+
+# Submit job request and put any user requests second to override defaults
+echo "Running command:"
+echo -e "qsub -I $qsub_args\n"
+
+if [[ $dry_run != true ]]; then
+    qsub -I $qsub_args
+fi

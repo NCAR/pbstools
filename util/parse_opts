@@ -1,0 +1,142 @@
+#!/bin/bash
+
+# Make sure variables are ready for this script
+declare -A chunk_map=( [ntasks]=mpiprocs [nthreads]=ompthreads [cpu]=cpu_type [ngpus]=ngpus [mem]=mem )
+unset nchunks ncpus gpu dry_run show_help debug_mode def_ncpus logpath ${!chunk_map[@]}
+
+# Create associative dictionary of arguments
+declare -A arg_dict
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --)
+            # qcmd delimiter
+            shift
+            break
+            ;;
+        --help)
+            show_help=true
+            ;;
+        --show)
+            dry_run=true
+            ;;
+        --debug)
+            debug_mode=true
+            ;;
+        @*)
+            pbs_server=${1:1}
+            ;;
+        --[a-z]*)
+            if [[ $1 == *=* ]]; then
+                arg_flag=$(cut -d= -f1 <<< ${1:2})
+                declare $arg_flag=${1#*=}
+            else
+                declare ${1:2}=$2
+                shift
+            fi
+            ;;
+        *)
+            arg_flag=${1:0:2}
+
+            if [[ $1 == $arg_flag ]]; then
+                if [[ $arg_flag == -l ]]; then
+                    arg_flag="$arg_flag ${2%%=*}"
+                    arg_dict["$arg_flag"]=${2#*=}
+                else
+                    arg_dict[$arg_flag]=$2
+                fi
+
+                shift
+            elif [[ $1 == -l* ]]; then
+                arg_flag=$(cut -d= -f1 <<< ${1:2})
+                arg_dict["$arg_flag"]=${1#*=}
+            else
+                arg_dict[$arg_flag]=${1:2}
+            fi
+            ;;
+    esac
+
+    shift
+done
+
+declare -A pbs_opts 
+
+# Load defaults based on chosen method
+if [[ -z $pbs_server ]]; then
+    if [[ ${arg_dict[-q]} == *@* ]]; then
+        pbs_server=${arg_dict[-q]#*@}
+    elif [[ $0 == *execcasper ]]; then
+        pbs_server=casper
+    else
+        pbs_server=$NCAR_HOST
+    fi
+fi
+
+if [[ -f ../etc/${pbs_server}.conf ]]; then
+    . ../etc/${pbs_server}.conf
+else
+    2>&1 echo "Error: Unknown system with name $pbs_server"
+    exit 1
+fi
+
+if [[ $show_help == true ]]; then
+    usage
+    exit
+fi
+
+if [[ -z $ncpus ]]; then
+    if [[ $ntasks ]] || [[ $nthreads ]]; then
+        ncpus=$((${ntasks:-1} * ${nthreads:-1}))
+    fi
+fi
+
+if [[ $ncpus -ge $max_cpus ]]; then
+    2>&1 echo "Error: ncpus ($ncpus) exceeds maximum allowed ($max_cpus) on node type!"
+    exit 1
+fi
+
+# Add any additional chunk-spec flags from double-dash options
+pbs_opts['-l select']=${nchunks:-1}:ncpus=${ncpus:-${def_ncpus:-1}}${pbs_opts['-l select']}
+
+for res in ${!chunk_map[@]}; do
+    if [[ ${!res} ]]; then
+        if [[ ${pbs_opts['-l select']} != *":${chunk_map[$res]}="* ]]; then
+            pbs_opts['-l select']=${pbs_opts['-l select']}:${chunk_map[$res]}=${!res}
+
+            if [[ $res == ngpus ]] && [[ -z ${pbs_opts['-l gpu_type']} ]]; then
+                if [[ -z $def_gpu ]]; then
+                    2>&1 echo "Error: configuration does not support GPUs!"
+                    exit
+                fi
+
+                pbs_opts['-l gpu_type']=${gpu:-$def_gpu}
+            fi
+        fi
+    fi
+done
+
+# Override defaults with specified qsub arguments
+for opt in "${!arg_dict[@]}"; do
+    pbs_opts["$opt"]=${arg_dict["$opt"]}
+done
+
+# Fill account if not provided
+if [[ -z ${pbs_opts[-A]} ]]; then
+    if [[ ${!acc_var} ]]; then
+        pbs_opts[-A]=${!acc_var}
+    else
+        2>&1 echo "Error: no project provided as argument or via $acc_var"
+        exit 1
+    fi
+fi
+
+# Create PBS arg string
+for opt in "${!pbs_opts[@]}"; do
+    if [[ $opt == -l* ]]; then
+        qsub_args="$qsub_args ${opt}=${pbs_opts["$opt"]}"
+    elif [[ $opt == -q ]] && [[ ${pbs_opts["$opt"]} != *@* ]]; then
+        qsub_args="$qsub_args $opt ${pbs_opts["$opt"]}@$pbs_server"
+    else
+        qsub_args="$qsub_args $opt ${pbs_opts["$opt"]}"
+    fi
+done
