@@ -58,7 +58,7 @@ fi
 
 # Submit job request and put any user requests second to override defaults
 echo "Running command:"
-echo -e "qsub -I $qsub_args\n"
+echo -e "qsub -I$qsub_args\n"
 
 if [[ $dry_run != true ]]; then
     qsub -I $qsub_args

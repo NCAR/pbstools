@@ -7,7 +7,7 @@ function usage {
 cat << EOF
 Usage: $my_name [PBS options] -- executable [options]
 
-This script will run a command/executable on the ${pbs_opts[-q]} queue using one $res_type
+This script will run a command/executable on the ${pbs_opts[-q]} queue using $res_type
 by default. Any arguments submitted to the script will be forwarded to the qsub
 command, enabling you to override script defaults (e.g., walltime). Note that
 commands run using qcmd will *not* have interactive terminal support. Please
