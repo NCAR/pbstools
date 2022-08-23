@@ -65,15 +65,15 @@ declare -A pbs_opts
 if [[ -z $pbs_server ]]; then
     if [[ ${arg_dict[-q]} == *@* ]]; then
         pbs_server=${arg_dict[-q]#*@}
-    elif [[ $0 == *execcasper ]]; then
+    elif [[ $my_name == execcasper ]]; then
         pbs_server=casper
     else
         pbs_server=$NCAR_HOST
     fi
 fi
 
-if [[ -f ../etc/${pbs_server}.conf ]]; then
-    . ../etc/${pbs_server}.conf
+if [[ -f $my_root/etc/${pbs_server}.conf ]]; then
+    source $my_root/etc/${pbs_server}.conf
 else
     2>&1 echo "Error: Unknown system with name $pbs_server"
     exit 1

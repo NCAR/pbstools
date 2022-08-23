@@ -1,8 +1,11 @@
 #!/bin/bash
 
+my_name=$(basename $0)
+my_root="$( cd $(dirname "$0")/.. ; pwd )"
+
 function usage {
 cat << EOF
-Usage: $(basename $0) [PBS options] 
+Usage: $my_name [PBS options] 
 
 This command will start an interactive job on the ${pbs_opts[-q]} queue using one core
 by default. Any arguments submitted to the script will be forwarded to the qsub
@@ -36,7 +39,7 @@ exit
 }
 
 # Call parse_opts to construct PBS resource string
-source ../util/parse_opts
+source $my_root/util/parse_opts
 
 # Submit job using collected parameters
 echo -e "Submitting interactive job to PBS ..."

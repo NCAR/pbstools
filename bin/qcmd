@@ -1,8 +1,11 @@
 #!/bin/bash
 
+my_name=$(basename $0)
+my_root="$( cd $(dirname "$0")/.. ; pwd )"
+
 function usage {
 cat << EOF
-Usage: $(basename $0) [PBS options] -- executable [options]
+Usage: $my_name [PBS options] -- executable [options]
 
 This script will run a command/executable on the ${pbs_opts[-q]} queue using one $res_type
 by default. Any arguments submitted to the script will be forwarded to the qsub
@@ -83,7 +86,7 @@ clean_up () {
 
 
 # Call parse_opts to construct PBS resource string
-source ../util/parse_opts
+source $my_root/util/parse_opts
 
 if [[ $# -eq 0 ]]; then
     2>&1 echo "Error: No command provided to execute"
