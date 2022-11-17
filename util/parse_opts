@@ -90,7 +90,7 @@ if [[ -z $ncpus ]]; then
     fi
 fi
 
-if [[ $ncpus -ge $max_cpus ]]; then
+if [[ $ncpus -gt $max_cpus ]]; then
     2>&1 echo "Error: ncpus ($ncpus) exceeds maximum allowed ($max_cpus) on node type!"
     exit 1
 fi
