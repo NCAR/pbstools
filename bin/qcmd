@@ -121,6 +121,7 @@ function bad_exit {
 
 trap bad_exit SIGTERM
 
+cd \$PBS_O_WORKDIR
 $my_shell -c "$my_command"
 my_status=\$?
 echo "%qcmddone% \$my_status"
