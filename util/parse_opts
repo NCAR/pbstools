@@ -35,18 +35,21 @@ while [[ $# -gt 0 ]]; do
                 shift
             fi
             ;;
-        *)
+        -X)
+            # Ignore this flag as it is handled by parent scripts
+            ;;
+        -*)
             arg_flag=${1:0:2}
 
             if [[ $1 == $arg_flag ]]; then
-                if [[ $arg_flag == -l ]]; then
-                    arg_flag="$arg_flag ${2%%=*}"
-                    arg_dict["$arg_flag"]=${2#*=}
-                else
-                    arg_dict[$arg_flag]=$2
+                read_arg_val=$arg_flag
+
+                if [[ $arg_flag != -l ]]; then
+                    arg_dict[$arg_flag]=
                 fi
 
                 shift
+                continue
             elif [[ $1 == -l* ]]; then
                 arg_flag=$(cut -d= -f1 <<< ${1:2})
                 arg_dict["$arg_flag"]=${1#*=}
@@ -54,8 +57,17 @@ while [[ $# -gt 0 ]]; do
                 arg_dict[$arg_flag]=${1:2}
             fi
             ;;
+        *)
+            if [[ $arg_flag == -l ]]; then
+                arg_flag="$arg_flag ${1%%=*}"
+                arg_dict["$arg_flag"]=${1#*=}
+            else
+                arg_dict[$arg_flag]=$1
+            fi
+            ;;
     esac
 
+    unset arg_flag
     shift
 done
 
