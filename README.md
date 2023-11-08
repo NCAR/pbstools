@@ -6,8 +6,9 @@ These tools help augment basic PBS Pro commands with capabilities desired by the
 
 * **qinteractive** - a script to quickly generate an interactive session
 * **qcmd** - a script that allows the user to run a command in an output-only (*but otherwise fully functional*) shell
+* **launch_cf** - a script that allows users to submit "command files" easily using PBS job arrays [(documentation)](https://ncar-hpc-docs.readthedocs.io/en/latest/pbs/job-scripts/#using-job-arrays-to-launch-a-command-file).
 
-The qinteractive script is also linked as `execcasper`, a variant that targets Casper by default.
+The `qinteractive` script is also linked as `execcasper`, a variant that targets Casper by default.
 
 ## Installation
 
