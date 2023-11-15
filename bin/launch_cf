@@ -2,7 +2,7 @@
 
 #----------------------------------------------------------------------------
 # environment & site config, if any
-SCRIPTDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+SCRIPTDIR="$( cd "$( dirname "$(readlink -f ${BASH_SOURCE[0]})" )" >/dev/null 2>&1 && pwd )"
 #----------------------------------------------------------------------------
 
 launch_cf_PBS_script="${SCRIPTDIR}/../share/launch_cf.pbs"
