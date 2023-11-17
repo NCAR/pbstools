@@ -145,9 +145,18 @@ echo "Waiting on job launch; $qcmd_job with qsub arguments:"
 echo -e "    qsub $qsub_args\n"
 
 while [[ ! -f $qcmd_log ]]; do
-    if [[ $SECONDS -gt 30 ]] && ! qstat ${qcmd_job%%.*} &> /dev/null; then
-        echo "Error: PBS could not successfully start job. Exiting..."
-        exit 1
+    if [[ $SECONDS -gt 30 ]] && [[ -z $job_exists ]]; then
+        # Try to use cached qstat once - if that fails, use real qstat once
+        if ! qstat ${qcmd_job%%.*} &> /dev/null; then
+            export QSCACHE_BYPASS=true
+
+            if ! qstat ${qcmd_job%%.*} &> /dev/null; then
+                echo "Error: PBS could not successfully start job. Exiting..."
+                exit 1
+            fi
+        fi
+
+        job_exists=true
     fi
 
     sleep 1
