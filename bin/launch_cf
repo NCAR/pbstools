@@ -78,7 +78,7 @@ parse_args ()
                 exit 1
                 ;;
 
-            "--queue")
+            "-q"|"--queue")
                 shift
                 queue=${1}
                 shift
@@ -158,13 +158,18 @@ parse_args $@
 #------------------------------------------------------------------
 # error & consistency checking
 [ -r ${command_file} ] || { echo "Cannot locate requested command file: ${command_file}"; exit 1; }
-[ $((${steps_per_node}*${threads_per_step})) -le ${ppn} ] || { echo "ERROR: ${steps_per_node}*${threads_per_step} > ${ppn}, check inputs!"; exit 1; }
 
 #------------------------------------------------------------------
 # main execution follows...
 n_total_steps=$(count_non_comment_lines ${command_file})
 
 echo "Found n_total_steps=${n_total_steps} in ${command_file}"
+
+# when the command file has fewer steps than our ${steps_per_node}, adjust.
+[ ${n_total_steps} -lt ${steps_per_node} ] && steps_per_node=${n_total_steps}
+[ ${n_total_steps} -lt ${ppn} ]            && ppn=${n_total_steps}
+
+
 
 #------------------------------------------------------------------
 njobs=$(( ${n_total_steps} / ${steps_per_node} ))
