@@ -135,8 +135,8 @@ case "${NCAR_HOST}" in
         ;;
     "casper")
         # use less than full nodes on Casper.
-        ppn=8
-        memlimit="80G"
+        ppn=1
+        memlimit="10G"
         queue="casper"
         ;;
     "cheyenne")
