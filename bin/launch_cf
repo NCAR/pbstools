@@ -28,7 +28,7 @@ usage ()
 {
     cat <<EOF
 ${0} <-h|--help>
-     <--queue PBS_QUEUE>
+     <-q|--queue PBS_QUEUE>
      <--ppn|--processors-per-node #CPUS>
      <--steps-per-node #Steps/node>
      <--nthreads|--threads-per-step #Threads/step>
@@ -71,6 +71,13 @@ parse_args ()
     while [ ${#} -gt 0 ] ; do
         # check the first argument
         case ${1} in
+
+            "-J"|*"select"*)
+                echo "ERROR: \"${1}\"is not allowed as an argument, rather is inferred from the number of command file steps and other arguments."
+                echo
+                echo "Run ${0} --help for additional details"
+                exit 1
+                ;;
 
             "-h"|"--help")
                 usage
@@ -173,7 +180,7 @@ echo "Found n_total_steps=${n_total_steps} in ${command_file}"
 
 #------------------------------------------------------------------
 njobs=$(( ${n_total_steps} / ${steps_per_node} ))
- # evenly divisible?
+# evenly divisible?
 [ $(( ${njobs} * ${steps_per_node} )) -eq ${n_total_steps} ] && njobs=$((${njobs}-1))
 echo "Running $((${njobs}+1)) jobs with ${steps_per_node} steps / node on NCAR resource ${NCAR_HOST}"
 
