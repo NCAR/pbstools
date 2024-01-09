@@ -41,7 +41,8 @@ getline_from_file ()
 
 tstart=$(date +%s)
 
-env | egrep "PBS|THREAD" | sort | uniq
+# print PBS-related environment variables
+# env | egrep "PBS|THREAD" | sort | uniq
 
 ### Set temp to scratch, if ${SCRATCH } is set
 [ -n ${SCRATCH} ] && export TMPDIR=${SCRATCH}/tmp && mkdir -p ${TMPDIR}
