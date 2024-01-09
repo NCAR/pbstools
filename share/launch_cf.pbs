@@ -80,7 +80,6 @@ fi
 if [ -z "${max_start_delay}" ]; then
     max_start_delay=0
 fi
-echo "max_start_delay=${max_start_delay}"
 
 # this PBS_ARRAY_INDEX will compute multiple "steps" from ${command_file}, up to ppn
 start_idx=$(( ${PBS_ARRAY_INDEX} * ${nranks_per_node} ))
@@ -88,6 +87,7 @@ stop_idx=$(( ${start_idx} + ${nranks_per_node} - 1 ))
 
 echo "n_total_steps: ${n_total_steps}, PBS_ARRAY_INDEX=${PBS_ARRAY_INDEX}"
 echo "start_idx=${start_idx} stop_idx=${stop_idx} "
+[ ${max_start_delay} -ne 0 ] && echo "max_start_delay=${max_start_delay}"
 
 # create a logs directory to hold stdout from each process
 logs_dir=stdout-${PBS_ARRAY_ID/"[]"/}
