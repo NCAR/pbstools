@@ -47,7 +47,7 @@ env | egrep "PBS|THREAD" | sort | uniq
 [ -n ${SCRATCH} ] && export TMPDIR=${SCRATCH}/tmp && mkdir -p ${TMPDIR}
 
 # potentially source a users requested environment configuration
-[ -f ./config_env.sh ] && . ./config_env.sh
+[ -f ./config_env.sh ] && source ./config_env.sh
 
 # command file to read, potentially from environment
 command_file="${command_file:-./cmdfile}"
@@ -106,7 +106,7 @@ for step in $(seq ${start_idx} ${stop_idx}); do
 
     sleep $(( ${RANDOM} % $(( ${max_start_delay}+1 )) ))
 
-    echo "   [$(date +%Y-%m-%d" "%T" "%Z)] launching step $((${step}+1)): ${step_cmd}"
+    printf "%s launching step %05d: %s\n"  "[$(date +%Y-%m-%d" "%T" "%Z)]" $((${step}+1)) "${step_cmd}"
 
     # finally, launch our desired application with the requested arguments.  Redirect stdout/stderr to
     # the logs directory.
