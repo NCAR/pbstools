@@ -1,0 +1,6 @@
+# this is a comment line.
+# and so is this.
+dd if=/dev/zero of=/dev/null bs=1M count=50001 # step 01
+dd if=/dev/zero of=/dev/null bs=1M count=50002 # step 02
+dd if=/dev/zero of=/dev/null bs=1M count=50003 > step3.out 2>step3.err
+dd if=/dev/zero of=/dev/null bs=1M count=50004 # step 04

@@ -1,0 +1,5 @@
+gs_openmp*
+omp_cmdfile
+results.csv
+*.*/
+*.o*

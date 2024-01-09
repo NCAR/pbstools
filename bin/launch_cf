@@ -33,6 +33,8 @@ ${0} <-h|--help>
      <--steps-per-node #Steps/node>
      <--nthreads|--threads-per-step #Threads/step>
      <--mem|--memory RAM/node>
+     <--cpu_type TYPE>
+     <--random_start_delay MAX_DELAY (sec)>
      -A PBS_ACCOUNT -l walltime=01:00:00
      ... other PBS args ...
      <command file>
@@ -110,8 +112,20 @@ parse_args ()
                 ;;
 
             "--mem"|"--memory")
-                shift;
+                shift
                 memlimit=${1}
+                shift
+                ;;
+
+            "--cpu_type")
+                shift
+                cpu_type=${1}
+                shift
+                ;;
+
+            "--random_start_delay")
+                shift
+                max_start_delay=${1}
                 shift
                 ;;
 
@@ -133,6 +147,8 @@ parse_args ()
 # var defaults.
 command_file="./cmdfile"
 threads_per_step=1
+max_start_delay=0
+unset cpu_type
 
 case "${NCAR_HOST}" in
     "derecho")
@@ -160,7 +176,7 @@ esac
 steps_per_node=${ppn}
 
 # finally, allow the user specify options
-parse_args $@
+parse_args ${@}
 
 #------------------------------------------------------------------
 # error & consistency checking
@@ -191,8 +207,13 @@ echo "Running $((${njobs}+1)) jobs with ${steps_per_node} steps / node on NCAR r
 
 ss="1:ncpus=${ppn}:mpiprocs=${steps_per_node}:ompthreads=${threads_per_step}:mem=${memlimit}"
 
+# append cpu_type to select statement, if set.
+[ -z "${cpu_type+x}" ] && echo "no cpu_type specified" || args_for_pbs="-l cpu_type=${cpu_type} ${args_for_pbs}"
+
 set -x
 qsub -v command_file="${command_file}" \
-     -q ${queue} -l select=${ss} \
+     -v max_start_delay="${max_start_delay}" \
+     -q ${queue} \
+     -l select=${ss} \
      ${args_for_pbs} \
      ${launch_cf_PBS_script}
