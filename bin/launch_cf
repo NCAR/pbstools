@@ -211,8 +211,7 @@ ss="1:ncpus=${ppn}:mpiprocs=${steps_per_node}:ompthreads=${threads_per_step}:mem
 [ -z "${cpu_type+x}" ] && echo "no cpu_type specified" || args_for_pbs="-l cpu_type=${cpu_type} ${args_for_pbs}"
 
 set -x
-qsub -v command_file="${command_file}" \
-     -v max_start_delay="${max_start_delay}" \
+qsub -v command_file="${command_file}",max_start_delay="${max_start_delay}" \
      -q ${queue} \
      -l select=${ss} \
      ${args_for_pbs} \
