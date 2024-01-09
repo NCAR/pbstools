@@ -1,6 +1,6 @@
 # this is a comment line.
 # and so is this.
-dd if=/dev/zero of=/dev/null bs=1M count=50001 # step 01
+env | sort | uniq                              # step 01
 dd if=/dev/zero of=/dev/null bs=1M count=50002 # step 02
 dd if=/dev/zero of=/dev/null bs=1M count=50003 # step 03
 dd if=/dev/zero of=/dev/null bs=1M count=50004 # step 04
