@@ -141,6 +141,7 @@ if [[ $qsub_status != 0 ]]; then
     exit $qsub_status
 fi
 
+trap clean_up SIGINT SIGTERM
 echo "Waiting on job launch; $qcmd_job with qsub arguments:"
 echo -e "    qsub $qsub_args\n"
 
