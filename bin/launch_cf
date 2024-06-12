@@ -257,6 +257,7 @@ ss="1:ncpus=${ppn}:mpiprocs=${steps_per_node}:ompthreads=${threads_per_step}:mem
 
 set -x
 qsub -v command_file="${command_file}",max_start_delay="${max_start_delay}" \
+     -r y \
      -q ${queue} \
      -l select=${ss} \
      ${args_for_pbs} \
