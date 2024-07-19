@@ -7,7 +7,7 @@ function usage {
 cat << EOF
 Usage: $my_name [PBS options] 
 
-This command will start an interactive job on the ${pbs_opts[-q]} queue using one core
+This command will start an interactive job on the ${pbs_opts[-q]} queue using $res_type
 by default. Any arguments submitted to the script will be forwarded to the qsub
 command, enabling you to override script defaults (e.g., walltime). In addition
 to the standard PBS options, this command provides the following short resource
