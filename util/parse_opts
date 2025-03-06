@@ -7,6 +7,9 @@ unset nchunks ncpus gpu dry_run show_help debug_mode def_ncpus logpath ${!chunk_
 # Create associative dictionary of arguments
 declare -A arg_dict
 
+# Determine specific account variable name
+acc_var=PBS_ACCOUNT_${NCAR_HOST^^}
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         --)
@@ -136,8 +139,12 @@ done
 if [[ -z ${pbs_opts[-A]} ]]; then
     if [[ ${!acc_var} ]]; then
         pbs_opts[-A]=${!acc_var}
+    elif [[ ${!acc_var_dep} ]]; then
+        pbs_opts[-A]=${!acc_var_dep}
+    elif [[ $PBS_ACCOUNT ]]; then
+        pbs_opts[-A]=$PBS_ACCOUNT
     else
-        2>&1 echo "Error: no project provided as argument or via $acc_var"
+        2>&1 echo "Error: no project provided as argument or via PBS_ACCOUNT/$acc_var"
         exit 1
     fi
 fi

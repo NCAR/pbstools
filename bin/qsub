@@ -1,0 +1,45 @@
+#!/bin/bash
+#
+#   qsub wrapper to resolve Variable_list breakage with Bash functions
+#
+
+# Make sure this script is not being sourced
+if (return 0 2>/dev/null); then
+    >&2 echo "Error: I need to be executed, not sourced"
+    return 1
+fi
+
+# Determine basename and path of call
+mypath="$( cd "$(dirname "$(readlink -f $0)")" ; pwd )"
+myname=${0##*/}
+envbin=$(which $myname)
+
+# Remove current instance of wrapper from PATH, if set
+if cmp --silent $envbin $mypath/$myname; then
+    newpath=${PATH/${envbin%/*}:}
+
+    if [[ $newpath == $PATH ]]; then
+        >&2 echo "NCAR_ERROR: cannot remove wrapper from path"
+        exit 1
+    else
+        export PATH=$newpath
+    fi
+fi
+
+# Check for existence of actual binary
+if ! which qsub >& /dev/null; then
+    >&2 echo "NCAR_ERROR: wrapper cannot locate path to qsub"
+    exit 1
+fi
+
+# Unset bash functions since they often don't propagate to the job environment properly
+for bash_func in $(env | sed -n 's/^BASH_FUNC_\([^%]*\).*/\1/p'); do
+    unset -f $bash_func
+done
+
+# Dumb script to init modules only. Bash won't reinitialize login shell if PROFILEREAD
+# is set, but can't just unset PROFILEREAD as PATH and MANPATH will be overwritten/broken
+export BASH_ENV=$mypath/../util/mod_init.sh
+
+# Now call the real qsub
+exec qsub "$@"

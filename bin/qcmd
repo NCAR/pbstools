@@ -30,12 +30,15 @@ options. Use a standard "-l select=" flag for heterogenous jobs.
 You have two ways of selecting an account to use for the submission:
 
 1. Use the PBS -A [account] command line argument
-2. Set the $acc_var environment variable
+2. Set PBS_ACCOUNT or $acc_var environment variable
+   (the latter takes precedence)
 
 If you do not set an account to use, a random project will be chosen from the 
 list of valid projects for your username. It is best to set an account!
 
-Current $acc_var value = ${!acc_var}
+Current values:
+  PBS_ACCOUNT=${PBS_ACCOUNT:-N/A}
+  $acc_var=${!acc_var:-N/A}
 
 EOF
 exit
