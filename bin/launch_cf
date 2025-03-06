@@ -11,12 +11,12 @@ launch_cf_PBS_script="${SCRIPTDIR}/../share/launch_cf.pbs"
 
 #------------------------------------------------------------------
 # bash function to count lines not beginning with "#" from a text file
-count_non_comment_lines ()
+count_non_comment_non_empty_lines ()
 {
     i=0
     while read line; do
-	# skip comment lines beginning with "#"
-	[[ ${line:0:1} == "#" ]] && continue || i=$((i + 1))
+        # skip comment lines beginning with "#" and empty lines
+        [[ ${line:0:1} == "#" || -z "${line// }" ]] && continue || i=$((i + 1))
     done < "${1}"
     echo ${i}
     return 0
@@ -225,13 +225,13 @@ parse_args ${@}
 
 #------------------------------------------------------------------
 # main execution follows...
-n_total_steps=$(count_non_comment_lines ${command_file})
+n_total_steps=$(count_non_comment_non_empty_lines ${command_file})
 
 echo "Found n_total_steps=${n_total_steps} in ${command_file}"
 
 # when the command file has fewer steps than our ${steps_per_node}, adjust.
 [ ${n_total_steps} -lt ${steps_per_node} ] && steps_per_node=${n_total_steps}
-[ ${n_total_steps} -lt ${ppn} ]            && ppn=${n_total_steps}
+#[ ${n_total_steps} -lt ${ppn} ]            && ppn=${n_total_steps}
 
 #------------------------------------------------------------------
 njobs=$(( ${n_total_steps} / ${steps_per_node} ))

@@ -18,15 +18,25 @@ omp_cmdfile: Makefile
 	done
 	mv $@.tmp $@
 
+hello_world_openmp: hello_world_openmp.C
+	g++ -O2 -o $@ $< -fopenmp
 
-check_derecho: gs_openmp omp_cmdfile
+hw_cmdfile: hello_world_openmp Makefile
+	echo "# sample cmdfile for an OpenMP application" > $@.tmp
+	for i in $$(seq 1 6); do \
+	  echo "./$< # step $${i}" >> $@.tmp ; \
+	done
+	mv $@.tmp $@
+
+check_derecho: gs_openmp omp_cmdfile hw_cmdfile
 	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 # check defaults
 	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 ./smalltest # njobs < ppn
 	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --nthreads 4 --steps-per-node 32 ./omp_cmdfile # openmp test
+	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --nthreads 32 --steps-per-node 2 ./hw_cmdfile # openmp test
 	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 -q casper@casper-pbs --ppn 32 --nthreads 4 -N derecho2casper_openmp_test ./omp_cmdfile # openmp test, derecho cross submission
-	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --processors-per-node 128 --nthreads 8 --steps-per-node 16 --memory 230G --queue preempt --cpu_type milan --random_start_delay 5 -N all_args_test ./omp_cmdfile # all args
+	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --processors-per-node 128 --nthreads 8 --steps-per-node 16 --memory 100G --queue preempt --cpu_type milan --random_start_delay 5 -N all_args_test ./omp_cmdfile # all args
 
-check_casper: gs_openmp omp_cmdfile
+check_casper: gs_openmp omp_cmdfile hw_cmdfile
 	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 # check defaults
 	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 ./smalltest # njobs < ppn
 	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --nthreads 4 --steps-per-node 8 ./omp_cmdfile # openmp test
