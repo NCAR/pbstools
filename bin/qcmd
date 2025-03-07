@@ -92,7 +92,7 @@ clean_up () {
 source $my_root/util/parse_opts
 
 if [[ $# -eq 0 ]]; then
-    2>&1 echo "Error: No command provided to execute"
+    >&2 echo "Error: No command provided to execute"
     exit 1
 else
     my_command="$@"
@@ -139,8 +139,8 @@ qsub_status=$?
 
 # Check that job ID was produced
 if [[ $qsub_status != 0 ]]; then
-    echo $qcmd_job
-    echo "Error: error in qsub submission. Exiting ..."
+    >&2 echo $qcmd_job
+    >&2 echo "Error: error in qsub submission. Exiting ..."
     exit $qsub_status
 fi
 
@@ -149,18 +149,25 @@ echo "Waiting on job launch; $qcmd_job with qsub arguments:"
 echo -e "    qsub $qsub_args\n"
 
 while [[ ! -f $qcmd_log ]]; do
-    if [[ $SECONDS -gt 30 ]] && [[ -z $job_exists ]]; then
+    # If file does not appear quickly, make sure the job still exists
+    if [[ $SECONDS -gt 30 ]] && [[ -z $job_status ]]; then
         # Try to use cached qstat once - if that fails, use real qstat once
         if ! qstat ${qcmd_job%%.*} &> /dev/null; then
             export QSCACHE_BYPASS=true
 
             if ! qstat ${qcmd_job%%.*} &> /dev/null; then
-                echo "Error: PBS could not successfully start job. Exiting..."
-                exit 1
+                job_status=missing
+                continue
             fi
         fi
 
-        job_exists=true
+        job_status=waiting
+    elif [[ ${job_status:-none} == missing ]]; then
+        >&2 echo -e "Error: PBS could not successfully start job.\n"
+        >&2 echo "    Missing file:  $qcmd_log"
+        >&2 echo "    Missing jobid: ${qcmd_job%%.*}"
+
+        exit 1
     fi
 
     sleep 1
