@@ -90,7 +90,7 @@ fi
 if [[ -f $my_root/etc/${pbs_server}.conf ]]; then
     source $my_root/etc/${pbs_server}.conf
 else
-    2>&1 echo "Error: Unknown system with name $pbs_server"
+    >&2 echo "Error: Unknown system with name $pbs_server"
     exit 1
 fi
 
@@ -106,7 +106,7 @@ if [[ -z $ncpus ]]; then
 fi
 
 if [[ $ncpus -gt $max_cpus ]]; then
-    2>&1 echo "Error: ncpus ($ncpus) exceeds maximum allowed ($max_cpus) on node type!"
+    >&2 echo "Error: ncpus ($ncpus) exceeds maximum allowed ($max_cpus) on node type!"
     exit 1
 fi
 
@@ -120,7 +120,7 @@ for res in ${!chunk_map[@]}; do
 
             if [[ $res == ngpus ]] && [[ -z ${pbs_opts['-l gpu_type']} ]]; then
                 if [[ -z $def_gpu ]]; then
-                    2>&1 echo "Error: configuration does not support GPUs!"
+                    >&2 echo "Error: configuration does not support GPUs!"
                     exit
                 fi
 
@@ -144,7 +144,7 @@ if [[ -z ${pbs_opts[-A]} ]]; then
     elif [[ $PBS_ACCOUNT ]]; then
         pbs_opts[-A]=$PBS_ACCOUNT
     else
-        2>&1 echo "Error: no project provided as argument or via PBS_ACCOUNT/$acc_var"
+        >&2 echo "Error: no project provided as argument or via PBS_ACCOUNT/$acc_var"
         exit 1
     fi
 fi
@@ -159,3 +159,35 @@ for opt in "${!pbs_opts[@]}"; do
         qsub_args="$qsub_args $opt ${pbs_opts["$opt"]}"
     fi
 done
+
+# Check whether TMPDIR exists
+if [[ -n $TMPDIR ]]; then
+    if [[ ! -d $TMPDIR ]]; then
+        if [[ $(id -u) -ge 1000 ]]; then
+            tmp_stub="${TMPDIR%/*}"
+
+            while [[ -n $tmp_stub ]]; do
+                if [[ -w $tmp_stub ]]; then
+                    mkdir -p "$TMPDIR"
+                    break
+                elif [[ -d $tmp_stub ]]; then
+                    break
+                fi
+
+                tmp_stub="${tmp_stub%/*}"
+            done
+
+            if [[ ! -d $TMPDIR ]]; then
+                >&2 echo "Error: current TMPDIR does not exist and cannot be created"
+                >&2 echo "       TMPDIR = $TMPDIR"
+                exit 1
+            fi
+        else
+            unset TMPDIR
+        fi
+    elif [[ ! -w $TMPDIR ]]; then
+        >&2 echo "Error: user does not have write-permissions to current TMPDIR"
+        >&2 echo "       TMPDIR = $TMPDIR"
+        exit 1
+    fi
+fi
