@@ -74,16 +74,13 @@ handle_logs () {
 }
 
 clean_up () {
-    if qstat ${qcmd_job%%.*} &> /dev/null; then
-        qdel $qcmd_job 2> /dev/null
-    fi
-    
-    if [[ ! -z $qcmd_job ]]; then
-        echo -e "\nqcmd job $qcmd_job terminated"
+    if [[ -n $qcmd_job ]]; then
+        qdel $qcmd_job >& /dev/null
+        echo -e "\nqcmd job $qcmd_job has been terminated"
         sleep 5
         handle_logs
     fi
-
+    
     exit 1
 }
 
