@@ -4,12 +4,12 @@
 
 #------------------------------------------------------------------
 # bash function to count lines not beginning with "#" from a text file
-count_non_comment_lines ()
+count_non_comment_non_empty_lines ()
 {
     i=0
     while read line; do
-	# skip comment lines beginning with "#"
-	[[ ${line:0:1} == "#" ]] && continue || i=$((i + 1))
+	# skip comment lines beginning with "#" and empty lines
+	[[ ${line:0:1} == "#" || -z "${line//}" ]] && continue || i=$((i + 1))
     done < "${1}"
     echo ${i}
     return 0
@@ -65,7 +65,7 @@ nranks_per_node=$((${nranks} / ${nnodes}))
 
 echo "(#steps/node) x (#threads/step) = ${nranks_per_node} x ${OMP_NUM_THREADS}"
 
-n_total_steps=$(count_non_comment_lines ${command_file})
+n_total_steps=$(count_non_comment_non_empty_lines ${command_file})
 
 # hackery: PBS will not allow us to submit a 1-entry array.
 # so for that case we will be submitted without a -J arg, yet
