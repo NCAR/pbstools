@@ -3,3 +3,5 @@ omp_cmdfile
 results.csv
 *.*/
 *.o*
+hello_world_openmp
+hw_cmdfile
