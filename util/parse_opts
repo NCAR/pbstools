@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Make sure variables are ready for this script
-declare -A chunk_map=( [ntasks]=mpiprocs [nthreads]=ompthreads [cpu]=cpu_type [ngpus]=ngpus [mem]=mem )
-unset nchunks ncpus gpu dry_run show_help debug_mode def_ncpus logpath ${!chunk_map[@]}
+declare -A chunk_map=( [ntasks]=mpiprocs [nthreads]=ompthreads [cpu]=cpu_type [gpu]=gpu_type [ngpus]=ngpus [mem]=mem )
+unset nchunks ncpus dry_run show_help debug_mode def_ncpus logpath ${!chunk_map[@]}
 
 # Create associative dictionary of arguments
 declare -A arg_dict
@@ -118,13 +118,13 @@ for res in ${!chunk_map[@]}; do
         if [[ ${pbs_opts['-l select']} != *":${chunk_map[$res]}="* ]]; then
             pbs_opts['-l select']=${pbs_opts['-l select']}:${chunk_map[$res]}=${!res}
 
-            if [[ $res == ngpus ]] && [[ -z ${pbs_opts['-l gpu_type']} ]]; then
+            if [[ $res == ngpus ]] && [[ -z $gpu ]]; then
                 if [[ -z $def_gpu ]]; then
                     >&2 echo "Error: configuration does not support GPUs!"
                     exit
                 fi
 
-                pbs_opts['-l gpu_type']=${gpu:-$def_gpu}
+                pbs_opts['-l select']=${pbs_opts['-l select']}:gpu_type=$def_gpu
             fi
         fi
     fi
