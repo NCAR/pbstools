@@ -92,7 +92,13 @@ if [[ $# -eq 0 ]]; then
     >&2 echo "Error: No command provided to execute"
     exit 1
 else
-    my_command="$@"
+    for arg in "$@"; do
+        if [[ $arg == *" "* ]]; then
+            my_command="${my_command:+$my_command }\\\"$arg\\\""
+        else
+            my_command="${my_command:+$my_command }$arg"
+        fi
+    done
 fi
 
 if [[ $dry_run == true ]]; then
