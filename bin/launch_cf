@@ -6,6 +6,7 @@ SCRIPTDIR="$( cd "$( dirname "$(readlink -f ${BASH_SOURCE[0]})" )" >/dev/null 2>
 #----------------------------------------------------------------------------
 
 launch_cf_PBS_script="${SCRIPTDIR}/../share/launch_cf.pbs"
+launch_cf_cmdline="$(basename ${0}) ${*}"
 
 [ -f ${launch_cf_PBS_script} ] || { echo "ERROR: cannot locate ${launch_cf_PBS_script}"; exit 1; }
 
@@ -35,6 +36,7 @@ ${0} <-h|--help>
      <--mem|--memory RAM/node>
      <--cpu_type TYPE>
      <--random_start_delay MAX_DELAY (sec)>
+     <--script PBS_SCRIPT_NAME>
      -A PBS_ACCOUNT -l walltime=01:00:00
      ... other PBS args ...
      <command file>
@@ -53,6 +55,13 @@ be used to customize the environment with e.g. "module load" commands.
 All options in "<>" brackets are optional.  Any unrecognized arguments
 are passed through directly to qsub.
 The PBS options -A and -l walltime are required at minimum.
+
+A complete, self-contained PBS job script is written to the current
+directory, and that script is what gets submitted.  Every resource
+request appears as an ordinary "#PBS" directive, so the job is easy to
+inspect after the fact, and the script can be edited and resubmitted by
+hand with plain "qsub" without re-running ${0}.  Use --script to choose
+the name of the generated script.
 #------------------------------------------------------------------
 
 Examples:
@@ -115,6 +124,19 @@ parse_queue_args ()
 }
 
 #------------------------------------------------------------------
+# is a "#PBS <opt> ..." directive already requested by the user?
+# (used so our defaults do not duplicate an explicit user request)
+have_directive ()
+{
+    local opt="${1}" d
+    for d in "${user_directives[@]}"; do
+        [[ "${d}" == "${opt}" || "${d}" == "${opt} "* ]] && return 0
+    done
+    return 1
+}
+
+
+#------------------------------------------------------------------
 parse_args ()
 {
     # var defaults.
@@ -127,11 +149,13 @@ parse_args ()
     unset cpu_type
     unset mem_limit
     unset queue
-    unset args_for_pbs
+    unset script_out
+    # PBS options we pass through verbatim, one complete directive per entry
+    user_directives=()
 
     # if the user specifies -q|--queue, and the target requires cross-submission, that will
     # influence our defaults.
-    parse_queue_args ${@}
+    parse_queue_args "${@}"
     set_defaults ${execution_host}
 
     while [ ${#} -gt 0 ] ; do
@@ -193,13 +217,57 @@ parse_args ()
                 shift
                 ;;
 
+            "--script"|"--script-name")
+                shift
+                script_out=${1}
+                shift
+                ;;
+
             *)
-                if [ -f ${1} ]; then
+                if [ -f "${1}" ]; then
                     command_file="${1}"
+                    shift
+                elif [ "${1:0:1}" = "-" ]; then
+                    # a PBS option, destined for a "#PBS" directive in the generated script.
+                    pbs_opt="${1}"
+                    shift
+                    case "${pbs_opt}" in
+                        # PBS options that stand alone, taking no value
+                        "-I"|"-V"|"-X"|"-f"|"-z")
+                            user_directives+=( "${pbs_opt}" )
+                            ;;
+                        # a lone short option: its value is the next argument, e.g. "-A ACCOUNT"
+                        -[a-zA-Z])
+                            [ ${#} -gt 0 ] || { echo "ERROR: PBS option \"${pbs_opt}\" requires a value"; exit 1; }
+                            user_directives+=( "${pbs_opt} ${1}" )
+                            shift
+                            ;;
+                        # value attached to the option, e.g. "-lwalltime=01:00:00"
+                        *)
+                            user_directives+=( "${pbs_opt}" )
+                            ;;
+                    esac
                 else
-                    args_for_pbs="${args_for_pbs} ${1}"
+                    echo "ERROR: unrecognized argument \"${1}\""
+                    echo "       (if this was intended to be the command file, it does not exist or is not readable)"
+                    echo
+                    echo "Run ${0} --help for additional details"
+                    exit 1
                 fi
-                shift # past argument
+                ;;
+        esac
+    done
+
+    # the select statement and the array range are ours to compute; reject them in
+    # any of their forms, including e.g. "-l select=..." split across two arguments.
+    local d
+    for d in "${user_directives[@]}"; do
+        case "${d}" in
+            "-J"*|*"select"*)
+                echo "ERROR: \"${d}\" is not allowed as an argument, rather is inferred from the number of command file steps and other arguments."
+                echo
+                echo "Run ${0} --help for additional details"
+                exit 1
                 ;;
         esac
     done
@@ -216,12 +284,70 @@ parse_args ()
 }
 
 #------------------------------------------------------------------
+# write the complete, self-contained PBS job script we will submit.
+write_pbs_script ()
+{
+    local d
+    {
+        echo "#!/bin/bash"
+        for d in "${directives[@]}"; do
+            printf '#PBS %s\n' "${d}"
+        done
+
+        cat <<EOF
+
+#----------------------------------------------------------------------------
+# PBS job script generated by launch_cf.
+#
+#   generated       : $(date)
+#   submission dir  : $(pwd)
+#   launch_cf call  : ${launch_cf_cmdline}
+#
+#   command file    : ${command_file_abs}
+#   total steps     : ${n_total_steps}
+#   steps / node    : ${steps_per_node}
+#   threads / step  : ${threads_per_step}
+#   cpus / node     : ${ppn}
+#   array indices   : ${array_desc}
+#
+# This script is self-contained.  It can be inspected, edited, and resubmitted
+# directly with "qsub ${script_out}", without re-running launch_cf.
+#----------------------------------------------------------------------------
+
+#----------------------------------------------------------------------------
+# settings baked in by launch_cf.  Each can still be overridden at submit time,
+# e.g. "qsub -v command_file=./other_cmdfile ${script_out}"
+command_file="\${command_file:-${command_file_abs}}"
+n_total_steps="\${n_total_steps:-${n_total_steps}}"
+max_start_delay="\${max_start_delay:-${max_start_delay}}"
+#----------------------------------------------------------------------------
+EOF
+    } > "${script_out}" || { echo "ERROR: cannot write ${script_out}"; exit 1; }
+
+    header_lines=$(wc -l < "${script_out}")
+
+    # append the body of the launch_cf PBS template, less its shebang and its own
+    # #PBS directives (ours, above, are complete).
+    sed -e '/^#!\/bin\/bash/d' \
+        -e '/^[[:space:]]*#PBS[[:space:]]/d' \
+        "${launch_cf_PBS_script}" >> "${script_out}"
+
+    chmod +x "${script_out}"
+    return 0
+}
+
+
+#------------------------------------------------------------------
 # defaults & user arguments
-parse_args ${@}
+parse_args "${@}"
 
 #------------------------------------------------------------------
 # error & consistency checking
 [ -r ${command_file} ] || { echo "Cannot locate requested command file: ${command_file}"; exit 1; }
+
+# the generated script is meant to stand on its own, so refer to the command
+# file by absolute path.
+command_file_abs="$(readlink -f ${command_file})"
 
 #------------------------------------------------------------------
 # main execution follows...
@@ -246,19 +372,42 @@ echo " -> njobs=${njobs}"
 
 echo "Running $((${njobs}+1)) jobs with ${steps_per_node} steps / node on NCAR resource ${execution_host}"
 
-# hackery: PBS will not allow us to submit a 1-entry array.
-# for that case we will be submitted without a -J arg
-[ ${njobs} -gt 0 ] && args_for_pbs="-J 0-${njobs} ${args_for_pbs}"
-
 ss="1:ncpus=${ppn}:mpiprocs=${steps_per_node}:ompthreads=${threads_per_step}:mem=${mem_limit}"
 
-# append cpu_type to select statement, if set.
-[ -z "${cpu_type+x}" ] || args_for_pbs="-l cpu_type=${cpu_type} ${args_for_pbs}"
+#------------------------------------------------------------------
+# assemble the complete, ordered list of #PBS directives for the generated
+# script.  Our defaults are skipped when the user requested them explicitly,
+# so we never emit the same single-valued option twice.
+directives=()
+have_directive "-N" || directives+=( "-N launch_cf" )
+have_directive "-j" || directives+=( "-j oe" )
+have_directive "-r" || directives+=( "-r y" )
+directives+=( "-q ${queue}" )
+directives+=( "-l select=${ss}" )
 
-set -x
-qsub -v command_file="${command_file}",n_total_steps="${n_total_steps}",max_start_delay="${max_start_delay}" \
-     -r y \
-     -q ${queue} \
-     -l select=${ss} \
-     ${args_for_pbs} \
-     ${launch_cf_PBS_script}
+# append cpu_type as its own resource request, if set.
+[ -n "${cpu_type}" ] && directives+=( "-l cpu_type=${cpu_type}" )
+
+# hackery: PBS will not allow us to submit a 1-entry array.
+# for that case we will be submitted without a -J arg
+if [ ${njobs} -gt 0 ]; then
+    directives+=( "-J 0-${njobs}" )
+    array_desc="0-${njobs} ($((${njobs}+1)) array steps)"
+else
+    array_desc="none (single step; PBS does not allow a 1-entry job array)"
+fi
+
+# ... followed by whatever the user passed through for PBS
+directives+=( "${user_directives[@]}" )
+
+#------------------------------------------------------------------
+# name & write the job script
+[ -z "${script_out}" ] && script_out="./launch_cf.$(basename ${command_file}).$(date +%Y%m%d-%H%M%S).pbs"
+
+write_pbs_script
+
+echo
+echo "Generated PBS job script: ${script_out}"
+
+echo "Submitting: qsub ${script_out}"
+qsub "${script_out}"
