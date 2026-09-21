@@ -37,6 +37,7 @@ ${0} <-h|--help>
      <--cpu_type TYPE>
      <--random_start_delay MAX_DELAY (sec)>
      <--script PBS_SCRIPT_NAME>
+     <--dryrun|--dry-run>
      -A PBS_ACCOUNT -l walltime=01:00:00
      ... other PBS args ...
      <command file>
@@ -61,7 +62,8 @@ directory, and that script is what gets submitted.  Every resource
 request appears as an ordinary "#PBS" directive, so the job is easy to
 inspect after the fact, and the script can be edited and resubmitted by
 hand with plain "qsub" without re-running ${0}.  Use --script to choose
-the name of the generated script.
+the name of the generated script, and --dryrun to generate it (and report
+what would be requested) without submitting anything.
 #------------------------------------------------------------------
 
 Examples:
@@ -71,6 +73,9 @@ Examples:
 
   # launches the OpenMP-threaded commands listed in ./omp_cmdfile:
   ${0} -A PBS_ACCOUNT -l walltime=1:00:00 --nthreads 4 --steps-per-node 32 ./omp_cmdfile
+
+  # generate ./my_job.pbs and show what would be submitted, but do not submit:
+  ${0} -A PBS_ACCOUNT -l walltime=1:00:00 --script ./my_job.pbs --dryrun ./omp_cmdfile
 EOF
 }
 
@@ -150,6 +155,7 @@ parse_args ()
     unset mem_limit
     unset queue
     unset script_out
+    unset dryrun
     # PBS options we pass through verbatim, one complete directive per entry
     user_directives=()
 
@@ -220,6 +226,11 @@ parse_args ()
             "--script"|"--script-name")
                 shift
                 script_out=${1}
+                shift
+                ;;
+
+            "--dryrun"|"--dry-run")
+                dryrun="yes"
                 shift
                 ;;
 
@@ -408,6 +419,17 @@ write_pbs_script
 
 echo
 echo "Generated PBS job script: ${script_out}"
+
+#------------------------------------------------------------------
+if [ -n "${dryrun}" ]; then
+    echo
+    sed -n "1,${header_lines}p" "${script_out}"
+    echo "... (command file execution logic follows, see ${script_out})"
+    echo
+    echo "DRYRUN: nothing was submitted.  To submit this job as-is, run:"
+    echo "  qsub ${script_out}"
+    exit 0
+fi
 
 echo "Submitting: qsub ${script_out}"
 qsub "${script_out}"
