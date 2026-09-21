@@ -13,8 +13,10 @@ getline_from_file ()
 
     i=0
     while read line; do
-        # skip comment lines beginning with "#"
-        [[ ${line:0:1} == "#" ]] && continue
+        # skip comment lines beginning with "#" and empty lines, exactly as
+        # launch_cf does when counting steps -- otherwise the indices here and
+        # the step count it computed refer to different lines.
+        [[ ${line:0:1} == "#" || -z "${line// }" ]] && continue
 
         test ${i} = ${LINE_NO} && echo "${line}" && return
         i=$((i + 1))
