@@ -56,3 +56,14 @@ check: check_$(NCAR_HOST)
 # remove everything the check_derecho / check_casper jobs wrote.
 clean_derecho clean_casper:
 	rm -rf ./$(subst clean_,,$@)
+
+# scheduler-free check: exercise the argument handling and generate the PBS
+# scripts for inspection, without submitting anything.
+check_dryrun:
+	rm -rf ./dryrun && mkdir -p ./dryrun
+	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --dryrun --script ./dryrun/defaults.pbs # defaults, implicit ./cmdfile
+	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --dryrun --script ./dryrun/smalltest.pbs ./smalltest # njobs < ppn
+	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --nthreads 4 --steps-per-node 32 --dryrun --script ./dryrun/omp.pbs ./cmdfile # openmp test
+	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --nthreads 7 --steps-per-node 18 --dryrun --script ./dryrun/partial.pbs ./cmdfile # steps/node does not fill the node
+	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --nthreads 8 --steps-per-node 16 -l job_priority=economy -N all_args_test --random_start_delay 5 --dryrun --script ./dryrun/all_args.pbs ./cmdfile # pass-through args, -N override
+	@echo && echo "generated scripts:" && ls -1 ./dryrun/

@@ -7,3 +7,5 @@ hello_world_openmp
 hw_cmdfile
 derecho/
 casper/
+launch_cf.*.pbs
+dryrun/
