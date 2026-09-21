@@ -5,3 +5,5 @@ results.csv
 *.o*
 hello_world_openmp
 hw_cmdfile
+launch_cf.*.pbs
+dryrun/
