@@ -44,3 +44,11 @@ check_casper: gs_openmp omp_cmdfile hw_cmdfile
 #	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --processors-per-node 32 --nthreads 8 --steps-per-node 4 --memory 300G --queue casper --cpu_type cascadelake --random_start_delay 5 -N all_args_test ./omp_cmdfile # all args
 
 check: check_$(NCAR_HOST)
+
+# remove what the check_derecho / check_casper jobs wrote: their PBS output
+# files and step log directories (see "./check_results.sh --files"), and the
+# timings gs_openmp appends to results.csv (shared by both suites).  The
+# built executables and command files are left in place for the other suite.
+clean_derecho clean_casper:
+	./check_results.sh --files $(subst clean_,,$@) | xargs rm -rf
+	rm -f results.csv
