@@ -20,15 +20,12 @@ SCRIPTDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 usage ()
 {
     cat <<EOF
-${0} <-h|--help> <--files> <derecho|casper> <results dir>
+${0} <-h|--help> <derecho|casper> <results dir>
 
 Checks the jobs submitted by "make check_derecho" or "make check_casper".
 The test suite defaults to \${NCAR_HOST}, just like "make check", and the
-results dir defaults to ${SCRIPTDIR}, where the tests are submitted from.
-
-With --files, nothing is checked; rather the output files and step log
-directories of every run of the suite's jobs are listed, one per line.
-This is what "make clean_<suite>" removes.
+results dir defaults to the suite's subdirectory of ${SCRIPTDIR},
+where its tests are submitted from.
 EOF
 }
 
@@ -253,43 +250,9 @@ check_unidentified ()
 }
 
 #------------------------------------------------------------------
-# list the output files & step log directories of every run of this suite's
-# tests, not just the newest.  Jobs that exited before reporting their layout
-# are included too: those named launch_cf could have come from either suite,
-# and are listed for both.
-list_suite_files ()
-{
-    local label name cf spn thr N names seq d
-
-    while IFS='|' read -r label name cf spn thr; do
-        [ -r "${cf}" ] || { echo "WARNING: cannot read ./${cf}, skipping the \"${label}\" test" >&2; continue; }
-        N=$(count_non_comment_non_empty_lines "${cf}")
-        [ "${spn}" = "all" ] && spn=${N}
-        awk -F'\t' -v name="${name}" -v N=${N} -v spn=${spn} -v thr=${thr} \
-            '$1 == name && $5 == N && $6 == spn && $7 == thr { print $1 "\t" $2 }' "${records}"
-    done < <(expected_tests ${suite}) > "${records}.jobs"
-
-    names=$(expected_tests ${suite} | cut -d'|' -f2 | sort -u | tr '\n' ' ')
-    awk -F'\t' -v names=" ${names}" '$5 == "-" && index(names, " " $1 " ") { print $1 "\t" $2 }' "${records}" >> "${records}.jobs"
-
-    # every output file of those jobs, then their step log directories
-    awk -F'\t' 'NR == FNR { job[$1 "\t" $2] = 1; next } (($1 "\t" $2) in job) { print $12 }' \
-        "${records}.jobs" "${records}"
-    for seq in $(cut -f2 "${records}.jobs" | sort -u); do
-        for d in "stdout-${seq}" stdout-${seq}.*; do
-            [ -d "${d}" ] && echo "${d}"
-        done
-    done
-    rm -f "${records}.jobs"
-}
-
-#------------------------------------------------------------------
 # main execution follows...
-mode="check"
-[ "${1}" = "--files" ] && { mode="files"; shift; }
-
 suite="${1:-${NCAR_HOST}}"
-results_dir="${2:-${SCRIPTDIR}}"
+results_dir="${2}"
 
 case "${suite}" in
     "-h"|"--help")
@@ -304,13 +267,12 @@ case "${suite}" in
         echo "ERROR: unknown test suite \"${suite}\", expected derecho or casper"; usage; exit 1 ;;
 esac
 
+[ -z "${results_dir}" ] && results_dir="${SCRIPTDIR}/${suite}"
 cd "${results_dir}" || { echo "ERROR: cannot access results dir ${results_dir}"; exit 1; }
 
 records=$(mktemp "${TMPDIR:-/tmp}/check_results.XXXXXX") || exit 1
 trap 'rm -f "${records}"' EXIT
 scan_outputs > "${records}"
-
-[ "${mode}" = "files" ] && { list_suite_files; exit 0; }
 
 echo "launch_cf test results: check_${suite}, in $(pwd)"
 echo
