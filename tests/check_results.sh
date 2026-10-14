@@ -11,7 +11,8 @@
 #
 # Exit status: 0 = all tests passed
 #              1 = at least one test failed
-#              2 = nothing failed, but some tests have not (fully) run yet
+#              2 = nothing failed, but some tests have not (fully) run yet,
+#                  including tests stopped part way by the scheduler (preempted)
 #----------------------------------------------------------------------------
 
 SCRIPTDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
@@ -127,23 +128,45 @@ scan_outputs ()
 report ()
 {
     local status="${1}" label="${2}" detail="${3}" p
-    printf ' [%s] %-20s %s\n' "${status}" "${label}" "${detail}"
+    printf ' %-11s %-20s %s\n' "[${status}]" "${label}" "${detail}"
     for p in "${problems[@]}"; do
         printf '        - %s\n' "${p}"
     done
     case "${status}" in
         "PASS") npass=$((npass + 1)) ;;
         "FAIL") nfail=$((nfail + 1)) ;;
+        "PREEMPTED") npreempted=$((npreempted + 1)) ;;
         *)      nwait=$((nwait + 1)) ;;
     esac
+}
+
+#------------------------------------------------------------------
+# was this subjob stopped by the scheduler, e.g. preempted?  Asks PBS, which
+# only knows while it keeps the job history.  Prints "yes", "no <why>", or
+# "unknown" when that cannot be determined.
+stopped_by_scheduler ()
+{
+    local jobid="${1}" info status comment
+    command -v qstat >/dev/null 2>&1 || { echo "unknown"; return; }
+    # qstat wraps long values onto continuation lines beginning with a tab
+    info=$(qstat -xf "${jobid}" 2>/dev/null | awk '{ printf "%s", (sub(/^\t/, "") ? $0 : "\n" $0) }')
+    [ -z "${info}" ] && { echo "unknown"; return; }
+    if echo "${info}" | grep -q "terminated by Scheduler"; then
+        echo "yes"
+    else
+        status=$(echo "${info}" | awk -F' = ' '$1 ~ /Exit_status/ { print $2 }')
+        comment=$(echo "${info}" | awk -F' = ' '$1 ~ /comment/ { print $2 }')
+        echo "no Exit_status=${status:-unknown}, comment: ${comment:-none}"
+    fi
 }
 
 #------------------------------------------------------------------
 check_test ()
 {
     local label="${1}" name="${2}" cf="${3}" spn="${4}" thr="${5}"
-    local N nsub seq others detail logdir d
-    local nfiles nmiss notdone nd_file nerr err took miss smiss sdup
+    local N nsub seq others detail logdir d server jobid answer
+    local nfiles nmiss notdone stopped nerr err took miss smiss_done smiss_stopped sdup nolog
+    local nconfirmed=0 nunknown=0
     problems=()
 
     [ -r "${cf}" ] || { problems=( "cannot read ./${cf}; was \"make check_${suite}\" run from ${results_dir}?" ); report FAIL "${label}" ""; return; }
@@ -164,11 +187,22 @@ check_test ()
     fi
     selected_jobs+=( "${name}.o${seq}" )
 
-    # summarize all of this job's output files
-    IFS=$'\t' read -r nfiles nmiss notdone nd_file nerr err took miss smiss sdup <<< "$(awk -F'\t' -v name="${name}" -v seq=${seq} -v N=${N} -v nsub=${nsub} '
+    # the per-step logs, named for the job id, e.g. stdout-1234.desched1
+    logdir=""
+    for d in "stdout-${seq}" stdout-${seq}.*; do
+        [ -d "${d}" ] && { logdir="${d}"; break; }
+    done
+
+    # summarize all of this job's output files, together with the step logs.
+    # Steps missing from a subjob that stopped part way are counted apart from
+    # those missing from a subjob that claims to be done.
+    IFS=$'\t' read -r nfiles nmiss notdone stopped nerr err took miss smiss_done smiss_stopped sdup nolog <<< "$(awk -F'\t' \
+        -v name="${name}" -v seq=${seq} -v N=${N} -v spn=${spn} -v nsub=${nsub} -v haslogs=$([ -n "${logdir}" ] && echo 1 || echo 0) '
+        # first input: the step log directory listing
+        NR == FNR { if ($0 ~ /^step-[0-9]+\.out$/) haslog[substr($0, 6, length($0) - 9) + 0] = 1; next }
         $1 == name && $2 == seq {
             nfiles++; have[$4] = 1
-            if (!$8) { notdone++; if (nd_file == "") nd_file = $12 }
+            if (!$8) { notdone++; stop[$4] = 1; stopped = stopped (stopped == "" ? "" : ",") $4 }
             if ($9 > 0) { nerr += $9; if (err == "") err = $12 ": " $11 }
             if ($13 + 0 > took) took = $13 + 0
             n = split($10, s, ",")
@@ -178,25 +212,34 @@ check_test ()
             for (i = 0; i < nsub; i++)
                 if (!(i in have)) { nmiss++; if (nmiss <= 5) miss = miss (miss == "" ? "" : ",") i }
             if (nmiss > 5) miss = miss ",..."
-            for (i = 1; i <= N; i++) { if (!(i in cnt)) smiss++; else if (cnt[i] > 1) sdup++ }
-            printf "%d\t%d\t%d\t%s\t%d\t%s\t%d\t%s\t%d\t%d\n", nfiles, nmiss, notdone, (nd_file == "" ? "-" : nd_file),
-                nerr, (err == "" ? "-" : err), took, (miss == "" ? "-" : miss), smiss, sdup
-        }' "${records}")"
+            for (i = 1; i <= N; i++) {
+                sub_idx = int((i - 1) / spn)
+                if (i in cnt) {
+                    if (cnt[i] > 1) sdup++
+                    if (haslogs && !(i in haslog)) nolog++
+                }
+                else if (sub_idx in stop) smiss_stopped++
+                else if (sub_idx in have) smiss_done++
+            }
+            printf "%d\t%d\t%d\t%s\t%d\t%s\t%d\t%s\t%d\t%d\t%d\t%d\n", nfiles, nmiss, notdone, (stopped == "" ? "-" : stopped),
+                nerr, (err == "" ? "-" : err), took, (miss == "" ? "-" : miss), smiss_done, smiss_stopped, sdup, nolog
+        }' <(ls "${logdir:-/nonexistent}" 2>/dev/null) "${records}")"
+
+    # never let a summary we could not compute pass as a clean result
+    [ -n "${sdup}" ] || { problems=( "cannot summarize the output of job ${seq}" ); report FAIL "${label}" ""; return; }
 
     detail="job ${seq} (${name}): $((nsub - nmiss))/${nsub} subjobs, ${N} steps, ${spn} steps/node x ${thr} threads/step, longest subjob ${took}s"
     [ ${others} -gt 0 ] && detail="${detail}, ${others} older run(s) ignored"
 
     # problems reported by the subjobs themselves
-    [ ${nerr} -gt 0 ]    && problems+=( "${nerr} error(s) in the PBS output, first: ${err}" )
-    [ ${notdone} -gt 0 ] && problems+=( "${notdone} subjob(s) did not finish (no \"Done:\" line), e.g. ${nd_file}" )
-    [ ${sdup} -gt 0 ]    && problems+=( "${sdup} step(s) were launched more than once" )
+    [ ${nerr} -gt 0 ]       && problems+=( "${nerr} error(s) in the PBS output, first: ${err}" )
+    [ ${sdup} -gt 0 ]       && problems+=( "${sdup} step(s) were launched more than once" )
+    [ ${smiss_done} -gt 0 ] && problems+=( "${smiss_done} step(s) were never launched by subjobs that finished" )
 
     # the per-step logs
-    logdir=""
-    for d in "stdout-${seq}" stdout-${seq}.*; do
-        [ -d "${d}" ] && { logdir="${d}"; break; }
-    done
     if [ -n "${logdir}" ]; then
+        [ ${nolog} -gt 0 ] && problems+=( "${nolog} launched step(s) have no log in ${logdir}" )
+
         bad=( $(grep -l -E "${step_error_pattern}" "${logdir}"/step-*.out 2>/dev/null) )
         [ ${#bad[@]} -gt 0 ] && problems+=( "${#bad[@]} step log(s) show errors, e.g. ${bad[0]}: \"$(grep -m1 -E "${step_error_pattern}" "${bad[0]}")\"" )
 
@@ -205,23 +248,39 @@ check_test ()
             bad=( $(grep -L "running with ${thr} threads" "${logdir}"/step-*.out 2>/dev/null) )
             [ ${#bad[@]} -gt 0 ] && problems+=( "${#bad[@]} step log(s) do not report \"running with ${thr} threads\", e.g. ${bad[0]}" )
         fi
+    elif [ ${nmiss} -eq 0 ]; then
+        problems+=( "step log directory stdout-${seq}* not found" )
     fi
 
-    # completeness can only be judged once every subjob has reported
-    if [ ${nmiss} -eq 0 ]; then
-        [ ${smiss} -gt 0 ] && problems+=( "${smiss} of ${N} steps were never launched" )
-        if [ -z "${logdir}" ]; then
-            problems+=( "step log directory stdout-${seq}* not found" )
-        else
-            nlogs=$(ls "${logdir}" | awk -v N=${N} '
-                /^step-[0-9]+\.out$/ { have[substr($0, 6, length($0) - 9) + 0] = 1 }
-                END { for (i = 1; i <= N; i++) if (i in have) n++; print n + 0 }')
-            [ ${nlogs} -lt ${N} ] && problems+=( "only ${nlogs} of ${N} step logs found in ${logdir}" )
-        fi
+    # subjobs that stopped part way, without reporting an error, were most
+    # likely stopped by the scheduler -- e.g. preempted.  Ask PBS, if we can.
+    if [ ${notdone} -gt 0 ]; then
+        stopped=$(echo ${stopped//,/ } | tr ' ' '\n' | sort -n | paste -sd, -)
+        server="${logdir#stdout-${seq}}"
+        for d in ${stopped//,/ }; do
+            if [ ${nsub} -gt 1 ]; then jobid="${seq}[${d}]${server}"; else jobid="${seq}${server}"; fi
+            answer=$(stopped_by_scheduler "${jobid}")
+            case "${answer}" in
+                "yes")     nconfirmed=$((nconfirmed + 1)) ;;
+                "unknown") nunknown=$((nunknown + 1)) ;;
+                *)         problems+=( "subjob ${d} stopped part way, but PBS does not report the scheduler stopped it: ${answer#no }" ) ;;
+            esac
+        done
+        stop_summary="subjob(s) ${stopped} stopped part way; ${smiss_stopped} of ${N} steps never started, and any then running were cut short"
     fi
 
     if [ ${#problems[@]} -gt 0 ]; then
+        [ ${notdone} -gt 0 ] && problems+=( "${stop_summary}" )
         report FAIL "${label}" "${detail}"
+    elif [ ${notdone} -gt 0 ]; then
+        if [ ${nunknown} -eq 0 ]; then
+            problems=( "${stop_summary}, with no error: PBS reports the scheduler stopped them, i.e. preempted" )
+        else
+            problems=( "${stop_summary}, with no error: most likely preempted, confirm with \"qstat -xf ${seq}[${stopped%%,*}]${server}\" on the system" )
+        fi
+        [ ${nmiss} -gt 0 ] && problems+=( "no output yet from subjob(s) ${miss} (still queued or running?)" )
+        problems+=( "rerun the test to complete it" )
+        report PREEMPTED "${label}" "${detail}"
     elif [ ${nmiss} -gt 0 ]; then
         problems=( "no output yet from subjob(s) ${miss} (still queued or running?)" )
         report WAIT "${label}" "${detail}"
@@ -277,7 +336,7 @@ scan_outputs > "${records}"
 echo "launch_cf test results: check_${suite}, in $(pwd)"
 echo
 
-npass=0; nfail=0; nwait=0
+npass=0; nfail=0; nwait=0; npreempted=0
 selected_jobs=()
 while IFS='|' read -r label name cf spn thr <&3; do
     check_test "${label}" "${name}" "${cf}" "${spn}" "${thr}"
@@ -294,10 +353,10 @@ fi
 
 echo
 if [ ${nfail} -gt 0 ]; then
-    echo "Result: FAILED (${npass} passed, ${nfail} failed, ${nwait} not finished)"
+    echo "Result: FAILED (${npass} passed, ${nfail} failed, ${npreempted} preempted, ${nwait} not finished)"
     exit 1
-elif [ ${nwait} -gt 0 ]; then
-    echo "Result: NOT FINISHED (${npass} passed, ${nwait} not finished)"
+elif [ $((nwait + npreempted)) -gt 0 ]; then
+    echo "Result: NOT FINISHED (${npass} passed, ${npreempted} preempted, ${nwait} not finished)"
     exit 2
 fi
 echo "Result: PASSED (all ${npass} tests)"
