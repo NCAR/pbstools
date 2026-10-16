@@ -5,7 +5,7 @@ A collection of user-facing PBS convenience tools maintained by CSG
 These tools help augment basic PBS Pro commands with capabilities desired by the NCAR user community. Currently, the following tools are included:
 
 * **qinteractive** - a script to quickly generate an interactive session
-* **qcmd** - a script that allows the user to run a command in an output-only (*but otherwise fully functional*) shell
+* **qcmd** - a script that allows the user to run a command in an output-only (*but otherwise fully functional*) shell to check something on a compute node, for example `make`,`nvidia-smi`, or `lscpu`.
 * **launch_cf** - a script that allows users to submit "command files" easily using PBS job arrays [(documentation)](https://ncar-hpc-docs.readthedocs.io/en/latest/pbs/job-scripts/#using-job-arrays-to-launch-a-command-file).
 
 The `qinteractive` script is also linked as `execcasper`, a variant that targets Casper by default.
