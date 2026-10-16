@@ -205,8 +205,8 @@ check_test ()
     # those missing from a subjob that claims to be done.
     IFS=$'\t' read -r nfiles nmiss notdone stopped nerr err took miss smiss_done smiss_stopped sdup nolog <<< "$(awk -F'\t' \
         -v name="${name}" -v seq=${seq} -v N=${N} -v spn=${spn} -v nsub=${nsub} -v haslogs=$([ -n "${logdir}" ] && echo 1 || echo 0) '
-        # first input: the step log directory listing
-        NR == FNR { if ($0 ~ /^step-[0-9]+\.out$/) haslog[substr($0, 6, length($0) - 9) + 0] = 1; next }
+        # first input: the step log directory listing, which may be empty
+        FILENAME == ARGV[1] { if ($0 ~ /^step-[0-9]+\.out$/) haslog[substr($0, 6, length($0) - 9) + 0] = 1; next }
         $1 == name && $2 == seq {
             nfiles++; have[$4] = 1
             if (!$8) { notdone++; stop[$4] = 1; stopped = stopped (stopped == "" ? "" : ",") $4 }
