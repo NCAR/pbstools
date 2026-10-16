@@ -326,8 +326,12 @@ write_pbs_script ()
 #----------------------------------------------------------------------------
 
 #----------------------------------------------------------------------------
-# settings baked in by launch_cf.  Each can still be overridden at submit time,
-# e.g. "qsub -v command_file=./other_cmdfile ${script_out}"
+# settings baked in by launch_cf.  Each can still be overridden at submit
+# time, e.g.:
+#     qsub -v max_start_delay=0 ${script_out}
+# The job was sized for this command file, so a replacement command_file must
+# have the same number of steps (${n_total_steps}); for any other command file,
+# run launch_cf again.
 command_file="\${command_file:-${command_file_abs}}"
 n_total_steps="\${n_total_steps:-${n_total_steps}}"
 max_start_delay="\${max_start_delay:-${max_start_delay}}"
