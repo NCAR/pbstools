@@ -320,10 +320,15 @@ check_unidentified ()
 # generated, and the submission dir (which also prefixes the command file).
 normalize_script ()
 {
-    local subdir
+    local subdir cfdir
     subdir=$(sed -n 's/^#   submission dir  : //p' "${1}")
     if [ -n "${subdir}" ]; then
-        sed -e 's/^\(#   generated       : \).*/\1<date>/' -e "s|${subdir}|<submission dir>|g" "${1}"
+        # launch_cf records the command file with symbolic links resolved, so
+        # its directory can differ from the submission dir as given; the
+        # dry-run command files are all in the submission dir.
+        cfdir=$(sed -n 's/^#   command file    : //p' "${1}")
+        cfdir="${cfdir%/*}"
+        sed -e 's/^\(#   generated       : \).*/\1<date>/' -e "s|${cfdir:-${subdir}}|<submission dir>|g" -e "s|${subdir}|<submission dir>|g" "${1}"
     else
         sed -e 's/^\(#   generated       : \).*/\1<date>/' "${1}"
     fi
