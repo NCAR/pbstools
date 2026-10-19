@@ -31,7 +31,7 @@ usage ()
 ${0} <-h|--help>
      <-q|--queue PBS_QUEUE>
      <--ppn|--processors-per-node #CPUS>
-     <--steps-per-node #Steps/node>
+     <--steps-per-node #Steps/node | --nodes #Nodes>
      <--nthreads|--threads-per-step #Threads/step>
      <--mem|--memory RAM/node>
      <--cpu_type TYPE>
@@ -53,6 +53,12 @@ The optional bash configuration file "./config_env.sh" will
 be sourced prior to command execution, if found, and can therefore
 be used to customize the environment with e.g. "module load" commands.
 
+Each node runs up to (#CPUS / #Threads/step) steps at once.  A node given
+more steps than that, with --steps-per-node or --nodes, starts the next
+step each time a running one finishes, so its steps run in "waves".
+Allow walltime for that many steps in a row: launch_cf reports how many
+waves each node will run, but cannot know how long the steps take.
+
 All options in "<>" brackets are optional.  Any unrecognized arguments
 are passed through directly to qsub.
 The PBS options -A and -l walltime are required at minimum.
@@ -73,6 +79,10 @@ Examples:
 
   # launches the OpenMP-threaded commands listed in ./omp_cmdfile:
   ${0} -A PBS_ACCOUNT -l walltime=1:00:00 --nthreads 4 --steps-per-node 32 ./omp_cmdfile
+
+  # spreads the commands in ./cmdfile over 4 nodes, however many there are,
+  # running as many at once on each node as it has CPUs:
+  ${0} -A PBS_ACCOUNT -l walltime=4:00:00 --nodes 4 ./cmdfile
 
   # generate ./my_job.pbs and show what would be submitted, but do not submit:
   ${0} -A PBS_ACCOUNT -l walltime=1:00:00 --script ./my_job.pbs --dryrun ./omp_cmdfile
@@ -151,6 +161,8 @@ parse_args ()
     max_start_delay=0
     unset ppn
     unset steps_per_node
+    unset nodes
+    unset ppn_given
     unset cpu_type
     unset mem_limit
     unset queue
@@ -190,12 +202,19 @@ parse_args ()
             "--ppn"|"--processors-per-node")
                 shift
                 ppn=${1}
+                ppn_given="yes"
                 shift
                 ;;
 
             "--steps-per-node")
                 shift
                 steps_per_node=${1}
+                shift
+                ;;
+
+            "--nodes")
+                shift
+                nodes=${1}
                 shift
                 ;;
 
@@ -284,12 +303,16 @@ parse_args ()
     done
 
     # Consistency
+    local opt val
+    for opt in "--ppn:${ppn}" "--steps-per-node:${steps_per_node-1}" "--nodes:${nodes-1}" "--nthreads:${threads_per_step}"; do
+        val="${opt#*:}"
+        [[ "${val}" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: ${opt%%:*} must be a positive whole number, not \"${val}\""; exit 1; }
+    done
+    [ -n "${nodes}" -a -n "${steps_per_node}" ] && { echo "ERROR: give --steps-per-node or --nodes, not both"; exit 1; }
+    [ ${threads_per_step} -gt ${max_ppn} ] && { echo "ERROR: threads_per_step>${max_ppn}, inconsistent inputs?!"; usage; exit 1; }
     [ ${threads_per_step} -gt ${ppn} ] && ppn=${threads_per_step}
-    [ -z "${steps_per_node}" ] && steps_per_node=$(( ${ppn} / ${threads_per_step} ))
-    [ $(( ${steps_per_node}*${threads_per_step})) -gt ${max_ppn} ] && { echo "steps_per_node*threads_per_step>${max_ppn}, inconsistent inputs?!"; usage; exit 1; }
-    [ $(( ${steps_per_node}*${threads_per_step})) -gt ${ppn} ] && ppn=$(( ${steps_per_node}*${threads_per_step}))
 
-    [ ${ppn} -gt ${max_ppn} ] && { echo "ppn>${max_ppn}m inconsistent inputs?!"; usage; exit 1; }
+    [ ${ppn} -gt ${max_ppn} ] && { echo "ERROR: ppn>${max_ppn}, inconsistent inputs?!"; usage; exit 1; }
 
     return
 }
@@ -317,6 +340,7 @@ write_pbs_script ()
 #   command file    : ${command_file_abs}
 #   total steps     : ${n_total_steps}
 #   steps / node    : ${steps_per_node}
+#   steps at once   : ${steps_at_once} per node, in ${waves_per_node} wave(s)
 #   threads / step  : ${threads_per_step}
 #   cpus / node     : ${ppn}
 #   array indices   : ${array_desc}
@@ -335,6 +359,9 @@ write_pbs_script ()
 command_file="\${command_file:-${command_file_abs}}"
 n_total_steps="\${n_total_steps:-${n_total_steps}}"
 max_start_delay="\${max_start_delay:-${max_start_delay}}"
+# the steps each array element runs.  The job array was sized for it, so it
+# cannot be overridden.
+steps_per_node=${steps_per_node}
 #----------------------------------------------------------------------------
 EOF
     } > "${script_out}" || { echo "ERROR: cannot write ${script_out}"; exit 1; }
@@ -369,10 +396,30 @@ command_file_abs="$(readlink -f ${command_file})"
 n_total_steps=$(count_non_comment_non_empty_lines ${command_file})
 
 echo "Found n_total_steps=${n_total_steps} in ${command_file}"
+[ ${n_total_steps} -gt 0 ] || { echo "ERROR: no steps to run in ${command_file}"; exit 1; }
+
+# steps per node: given, spread over the requested number of nodes, or as
+# many as run at once on a node.
+if [ -n "${nodes}" ]; then
+    steps_per_node=$(( (${n_total_steps} + ${nodes} - 1) / ${nodes} ))
+elif [ -z "${steps_per_node}" ]; then
+    steps_per_node=$(( ${ppn} / ${threads_per_step} ))
+fi
+
+# unless --ppn was given, request enough CPUs to run every step of a node at
+# once, up to a full node.  Steps beyond that run as earlier ones finish.
+if [ -z "${ppn_given}" -a $(( ${steps_per_node}*${threads_per_step} )) -gt ${ppn} ]; then
+    ppn=$(( ${steps_per_node}*${threads_per_step} ))
+    [ ${ppn} -gt ${max_ppn} ] && ppn=${max_ppn}
+fi
 
 # when the command file has fewer steps than our ${steps_per_node}, adjust.
 [ ${n_total_steps} -lt ${steps_per_node} ] && steps_per_node=${n_total_steps}
-#[ ${n_total_steps} -lt ${ppn} ]            && ppn=${n_total_steps}
+
+# how many steps each node runs at once, and so in how many waves it runs them.
+steps_at_once=$(( ${ppn} / ${threads_per_step} ))
+[ ${steps_at_once} -gt ${steps_per_node} ] && steps_at_once=${steps_per_node}
+waves_per_node=$(( (${steps_per_node} + ${steps_at_once} - 1) / ${steps_at_once} ))
 
 #------------------------------------------------------------------
 njobs=$(( ${n_total_steps} / ${steps_per_node} ))
@@ -382,12 +429,21 @@ njobs=$(( ${n_total_steps} / ${steps_per_node} ))
 echo " -> ppn=${ppn}"
 echo " -> threads_per_step=${threads_per_step}"
 echo " -> steps_per_node=${steps_per_node}"
+echo " -> steps_at_once=${steps_at_once}"
+echo " -> waves_per_node=${waves_per_node}"
 echo " -> n_total_steps=${n_total_steps}"
 echo " -> njobs=${njobs}"
 
 echo "Running $((${njobs}+1)) jobs with ${steps_per_node} steps / node on NCAR resource ${execution_host}"
+[ -n "${nodes}" -a $((${njobs}+1)) -lt ${nodes:-0} ] && \
+    echo "NOTE: ${n_total_steps} steps at ${steps_per_node} steps / node need only $((${njobs}+1)) of the ${nodes} nodes requested"
+if [ ${waves_per_node} -gt 1 ]; then
+    echo "NOTE: each node runs ${steps_at_once} steps at once, so its ${steps_per_node} steps run in ${waves_per_node} waves."
+    echo "      Request walltime for up to ${waves_per_node} steps in a row."
+fi
 
-ss="1:ncpus=${ppn}:mpiprocs=${steps_per_node}:ompthreads=${threads_per_step}:mem=${mem_limit}"
+# mpiprocs is the number of steps each node runs at once.
+ss="1:ncpus=${ppn}:mpiprocs=${steps_at_once}:ompthreads=${threads_per_step}:mem=${mem_limit}"
 
 #------------------------------------------------------------------
 # assemble the complete, ordered list of #PBS directives for the generated

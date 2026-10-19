@@ -40,8 +40,10 @@ EOF
 #------------------------------------------------------------------
 # the tests in each suite, mirroring the check_derecho & check_casper
 # targets in ./Makefile -- keep the two in sync.
-#   label | PBS job name | command file | steps/node | threads/step
+#   label | PBS job name | command file | steps/node | threads/step | steps at once
 # steps/node "all" means every step fits on one node (a single, non-array job).
+# steps at once, if given and less than steps/node, means each node runs its
+# steps in waves; otherwise each node runs all of its steps at once.
 expected_tests ()
 {
     case "${1}" in
@@ -53,6 +55,8 @@ openmp|launch_cf|omp_cmdfile|32|4
 openmp hello world|launch_cf|hw_cmdfile|2|32
 derecho -> casper|derecho2casper_openmp_test|omp_cmdfile|8|4
 all args|all_args_test|omp_cmdfile|16|8
+waves|launch_cf|waves_cmdfile|200|1|128
+nodes|launch_cf|waves_cmdfile|150|4|32
 EOF
             ;;
         "casper")
@@ -61,6 +65,8 @@ defaults|launch_cf|cmdfile|1|1
 njobs < ppn|launch_cf|smalltest|1|1
 openmp|launch_cf|omp_cmdfile|8|4
 casper -> derecho|casper2derecho_openmp_test|omp_cmdfile|32|4
+waves|launch_cf|waves_cmdfile|40|1|8
+nodes|launch_cf|waves_cmdfile|100|1|36
 EOF
             ;;
     esac
@@ -87,7 +93,10 @@ count_non_comment_non_empty_lines ()
 # one tab-separated record per PBS output file in the current directory,
 # newest first:
 #   name seq rank idx N spn thr done nerr steps first_error file took
-# (fields not reported by the job are "-")
+#   at_once max_running finished failed
+# (fields not reported by the job are "-").  max_running is the most steps
+# launched but not yet reported finished, read in the order the job wrote them;
+# failed lists "step:exit status" for each step that exited with an error.
 scan_outputs ()
 {
     ls -t 2>/dev/null | grep -E '\.o[0-9]+(\.[0-9]+)?$' | awk '
@@ -102,6 +111,7 @@ scan_outputs ()
         idx = (np > 1) ? p[2] : "-"
 
         N = "-"; spn = "-"; thr = "-"; done = 0; nerr = 0; steps = ""; err = "-"; took = 0
+        at_once = "-"; running = 0; maxrun = 0; fin = ""; failed = ""
         while ((getline line < f) > 0) {
             if (index(line, "(#steps/node) x (#threads/step) = ") == 1) {
                 split(substr(line, 35), t, " x ")
@@ -112,8 +122,18 @@ scan_outputs ()
                 N = substr(line, 16, RLENGTH-15) + 0
             if (line ~ /^n_total_steps: / && match(line, /PBS_ARRAY_INDEX=[0-9]+/))
                 idx = substr(line, RSTART+16, RLENGTH-16) + 0
-            if (match(line, / launching step [0-9]+:/))
+            if (match(line, /^\(#steps at once\) = [0-9]+/))
+                at_once = substr(line, 20, RLENGTH-19) + 0
+            if (match(line, / launching step [0-9]+:/)) {
                 steps = steps "," (substr(line, RSTART+16, RLENGTH-17) + 0)
+                if (++running > maxrun) maxrun = running
+            }
+            if (match(line, / finished  step [0-9]+: exit status [0-9]+/)) {
+                split(substr(line, RSTART+16, RLENGTH-16), t, ": exit status ")
+                fin = fin "," (t[1] + 0)
+                if (t[2] + 0 != 0) failed = failed "," (t[1] + 0) ":" (t[2] + 0)
+                running--
+            }
             if (line ~ /^Done: PBS_ARRAY_INDEX=/) {
                 done = 1
                 if (match(line, /took [0-9]+ seconds/))
@@ -126,7 +146,8 @@ scan_outputs ()
         }
         close(f)
         if (idx == "-") idx = 0
-        print name, seq, NR, idx, N, spn, thr, done, nerr, (steps == "" ? "-" : steps), err, f, took
+        print name, seq, NR, idx, N, spn, thr, done, nerr, (steps == "" ? "-" : steps), err, f, took, \
+            at_once, maxrun, (fin == "" ? "-" : substr(fin, 2)), (failed == "" ? "-" : substr(failed, 2))
     }'
 }
 
@@ -170,9 +191,10 @@ stopped_by_scheduler ()
 #------------------------------------------------------------------
 check_test ()
 {
-    local label="${1}" name="${2}" cf="${3}" spn="${4}" thr="${5}"
+    local label="${1}" name="${2}" cf="${3}" spn="${4}" thr="${5}" at_once="${6}"
     local N nsub seq others detail logdir d server jobid answer
     local nfiles nmiss notdone stopped nerr err took miss smiss_done smiss_stopped sdup nolog
+    local maxrun wrong_at_once nofinish nfailed failed
     local nconfirmed=0 nunknown=0
     problems=()
 
@@ -180,6 +202,7 @@ check_test ()
     N=$(count_non_comment_non_empty_lines "${cf}")
     [ "${spn}" = "all" ] && spn=${N}
     nsub=$(( (N + spn - 1) / spn ))
+    [ -z "${at_once}" -o "${at_once:-0}" -gt ${spn} ] && at_once=${spn}
 
     # the newest job that ran this test (records are newest first)
     read -r seq others <<< "$(awk -F'\t' -v name="${name}" -v N=${N} -v spn=${spn} -v thr=${thr} '
@@ -202,9 +225,12 @@ check_test ()
 
     # summarize all of this job's output files, together with the step logs.
     # Steps missing from a subjob that stopped part way are counted apart from
-    # those missing from a subjob that claims to be done.
-    IFS=$'\t' read -r nfiles nmiss notdone stopped nerr err took miss smiss_done smiss_stopped sdup nolog <<< "$(awk -F'\t' \
-        -v name="${name}" -v seq=${seq} -v N=${N} -v spn=${spn} -v nsub=${nsub} -v haslogs=$([ -n "${logdir}" ] && echo 1 || echo 0) '
+    # those missing from a subjob that claims to be done.  So are steps that
+    # never reported finishing, when the job reports steps finishing at all.
+    IFS=$'\t' read -r nfiles nmiss notdone stopped nerr err took miss smiss_done smiss_stopped sdup nolog \
+                     maxrun wrong_at_once nofinish nfailed failed <<< "$(awk -F'\t' \
+        -v name="${name}" -v seq=${seq} -v N=${N} -v spn=${spn} -v nsub=${nsub} -v at_once=${at_once} \
+        -v haslogs=$([ -n "${logdir}" ] && echo 1 || echo 0) '
         # first input: the step log directory listing, which may be empty
         FILENAME == ARGV[1] { if ($0 ~ /^step-[0-9]+\.out$/) haslog[substr($0, 6, length($0) - 9) + 0] = 1; next }
         $1 == name && $2 == seq {
@@ -214,6 +240,10 @@ check_test ()
             if ($13 + 0 > took) took = $13 + 0
             n = split($10, s, ",")
             for (i = 1; i <= n; i++) if (s[i] != "" && s[i] != "-") cnt[s[i] + 0]++
+            if ($15 + 0 > maxrun) maxrun = $15 + 0
+            if ($14 != "-" && $14 + 0 != at_once) wrong_at_once++
+            if ($16 != "-") { n = split($16, s, ","); for (i = 1; i <= n; i++) fin[s[i] + 0] = 1; hasfin = 1 }
+            if ($17 != "-") { n = split($17, s, ","); for (i = 1; i <= n; i++) { nfailed++; if (nfailed <= 5) failed = failed (failed == "" ? "" : ",") s[i] } }
         }
         END {
             for (i = 0; i < nsub; i++)
@@ -224,24 +254,37 @@ check_test ()
                 if (i in cnt) {
                     if (cnt[i] > 1) sdup++
                     if (haslogs && !(i in haslog)) nolog++
+                    if (hasfin && !(i in fin) && !(sub_idx in stop)) nofinish++
                 }
                 else if (sub_idx in stop) smiss_stopped++
                 else if (sub_idx in have) smiss_done++
             }
-            printf "%d\t%d\t%d\t%s\t%d\t%s\t%d\t%s\t%d\t%d\t%d\t%d\n", nfiles, nmiss, notdone, (stopped == "" ? "-" : stopped),
-                nerr, (err == "" ? "-" : err), took, (miss == "" ? "-" : miss), smiss_done, smiss_stopped, sdup, nolog
+            if (nfailed > 5) failed = failed ",..."
+            printf "%d\t%d\t%d\t%s\t%d\t%s\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n", nfiles, nmiss, notdone, (stopped == "" ? "-" : stopped),
+                nerr, (err == "" ? "-" : err), took, (miss == "" ? "-" : miss), smiss_done, smiss_stopped, sdup, nolog,
+                maxrun, wrong_at_once, nofinish, nfailed, (failed == "" ? "-" : failed)
         }' <(ls "${logdir:-/nonexistent}" 2>/dev/null) "${records}")"
 
     # never let a summary we could not compute pass as a clean result
-    [ -n "${sdup}" ] || { problems=( "cannot summarize the output of job ${seq}" ); report FAIL "${label}" ""; return; }
+    [ -n "${failed}" ] || { problems=( "cannot summarize the output of job ${seq}" ); report FAIL "${label}" ""; return; }
 
-    detail="job ${seq} (${name}): $((nsub - nmiss))/${nsub} subjobs, ${N} steps, ${spn} steps/node x ${thr} threads/step, longest subjob ${took}s"
+    detail="job ${seq} (${name}): $((nsub - nmiss))/${nsub} subjobs, ${N} steps, ${spn} steps/node x ${thr} threads/step"
+    [ ${at_once} -lt ${spn} ] && detail="${detail}, ${at_once} at once in $(( (spn + at_once - 1) / at_once )) waves"
+    detail="${detail}, longest subjob ${took}s"
     [ ${others} -gt 0 ] && detail="${detail}, ${others} older run(s) ignored"
 
     # problems reported by the subjobs themselves
     [ ${nerr} -gt 0 ]       && problems+=( "${nerr} error(s) in the PBS output, first: ${err}" )
     [ ${sdup} -gt 0 ]       && problems+=( "${sdup} step(s) were launched more than once" )
     [ ${smiss_done} -gt 0 ] && problems+=( "${smiss_done} step(s) were never launched by subjobs that finished" )
+    [ ${nofinish} -gt 0 ]   && problems+=( "${nofinish} launched step(s) never reported finishing" )
+    [ ${nfailed} -gt 0 ]    && problems+=( "${nfailed} step(s) exited with an error (step:exit status): ${failed}" )
+
+    # how many steps each node ran at once
+    [ ${wrong_at_once} -gt 0 ] && problems+=( "${wrong_at_once} subjob(s) report running other than ${at_once} steps at once" )
+    [ ${maxrun} -gt ${at_once} ] && problems+=( "up to ${maxrun} steps ran at once on a node, more than the ${at_once} requested" )
+    [ ${at_once} -lt ${spn} -a ${maxrun} -lt ${at_once} ] && \
+        problems+=( "at most ${maxrun} steps ran at once on a node, so its ${at_once} slots were never all in use" )
 
     # the per-step logs
     if [ -n "${logdir}" ]; then
@@ -432,8 +475,8 @@ else
     echo
 
     selected_jobs=()
-    while IFS='|' read -r label name cf spn thr <&3; do
-        check_test "${label}" "${name}" "${cf}" "${spn}" "${thr}"
+    while IFS='|' read -r label name cf spn thr at_once <&3; do
+        check_test "${label}" "${name}" "${cf}" "${spn}" "${thr}" "${at_once}"
     done 3< <(expected_tests ${suite})
 
     unidentified=$(check_unidentified)

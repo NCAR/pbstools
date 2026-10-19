@@ -5,6 +5,7 @@ results.csv
 *.o*
 hello_world_openmp
 hw_cmdfile
+waves_cmdfile
 derecho/
 casper/
 launch_cf.*.pbs

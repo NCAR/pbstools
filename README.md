@@ -107,6 +107,7 @@ With `--ngpus`, the GPU type defaults to `a100` on Derecho. On Casper it default
 launch_cf -A PROJECT -l walltime=1:00:00                     # runs ./cmdfile
 launch_cf -A PROJECT -l walltime=1:00:00 ./my_cmdfile
 launch_cf -A PROJECT -l walltime=1:00:00 --nthreads 4 --steps-per-node 32 ./omp_cmdfile
+launch_cf -A PROJECT -l walltime=4:00:00 --nodes 4 ./my_cmdfile    # spread the steps over 4 nodes
 launch_cf -A PROJECT -l walltime=1:00:00 --dryrun ./my_cmdfile   # write the job script, don't submit it
 ```
 
@@ -124,7 +125,8 @@ launch_cf -A PROJECT -l walltime=1:00:00 --dryrun ./my_cmdfile   # write the job
 |---|---|---|---|
 | `-q`, `--queue QUEUE` | queue; `casper@casper-pbs` or `main@desched1` submits to the other system, using its defaults | `main` | `casper` |
 | `--ppn`, `--processors-per-node N` | CPUs per node (Casper: at most 36) | 128 | 1 |
-| `--steps-per-node N` | steps run at once on each node | CPUs ÷ threads | CPUs ÷ threads |
+| `--steps-per-node N` | steps each node runs; any beyond CPUs ÷ threads run in waves | CPUs ÷ threads | CPUs ÷ threads |
+| `--nodes N` | spread the steps evenly over N nodes, instead of giving `--steps-per-node` | | |
 | `--nthreads`, `--threads-per-step N` | OpenMP threads per step | 1 | 1 |
 | `--mem`, `--memory SIZE` | memory per node | `235G` | `10G` |
 | `--cpu_type TYPE` | CPU type | | |
@@ -134,10 +136,18 @@ launch_cf -A PROJECT -l walltime=1:00:00 --dryrun ./my_cmdfile   # write the job
 
 `-J` and `-l select=` are worked out from the steps and options above, so they can't be given.
 
+**Steps per node and waves**
+
+Each node runs up to CPUs ÷ threads steps at once. A node can be given more steps than that, with `--steps-per-node` or `--nodes`. It then starts its next step each time a running one finishes, so its steps run in *waves*. For example, 1200 steps on Derecho with `--nodes 4` give each node 300 steps, which run 128 at a time in 3 waves.
+
+* **Allow walltime for every wave.** `launch_cf` can't know how long the steps take, but it reports how many waves each node runs. Request enough walltime for that many steps in a row.
+* **Unless you give `--ppn`, each node gets enough CPUs to run all of its steps at once**, up to a full node. This matters on Casper, where the default is one CPU. With `--ppn`, each node runs only as many steps at once as fit in those CPUs.
+* **Each step's exit status** is reported in the array element's output file when the step finishes.
+
 **What it produces**
 
 * **A self-contained job script**, written to the current directory and then submitted. Every resource request is an ordinary `#PBS` line, so you can inspect it, edit it, and resubmit it with plain `qsub` without running `launch_cf` again.
-* **One output file per array element**, `<job name>.o<job id>.<index>`, listing the steps it launched. The job name is `launch_cf` unless you set `-N`.
+* **One output file per array element**, `<job name>.o<job id>.<index>`, listing the steps it launched, and when each finished with its exit status. The job name is `launch_cf` unless you set `-N`.
 * **Each step's output**, in `stdout-<job id>/step-NNNNN.out`.
 
 If every step fits on one node, the job is submitted without an array, since PBS doesn't allow one-element arrays.
