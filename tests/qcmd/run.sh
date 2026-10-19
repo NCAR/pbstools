@@ -5,7 +5,7 @@
 #   Last Revised:   23:50, 03 Nov 2025
 #
 
-if [[ $# -gt 1 ]]; then
+if [[ $# -ge 1 ]]; then
     if [[ -f $1/qinteractive ]]; then
         export PATH=$1:$PATH
     else
@@ -38,6 +38,6 @@ elif [[ $NCAR_HOST == casper ]]; then
     run_test "--cpu skylake"
     run_test ""
 else
-    >& echo "Error: unknown NCAR_HOST == $NCAR_HOST"
+    >&2 echo "Error: unknown NCAR_HOST == $NCAR_HOST"
     exit 1
 fi
