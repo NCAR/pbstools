@@ -20,6 +20,24 @@ export NCAR_HOST=derecho
 workdir="${SCRIPTDIR}/rerun"
 rm -rf "${workdir}" && mkdir -p "${workdir}" && cd "${workdir}" || exit 1
 
+# a stand-in for qstat, so that the test does not depend on what the system's
+# qstat says about these made-up jobs: every job has finished, except
+# ${fake_running_job}, which is reported running.
+mkdir -p ./bin
+cat > ./bin/qstat <<'EOF'
+#!/bin/bash
+for id; do :; done
+if [ -n "${fake_running_job}" ] && [[ "${id}" == "${fake_running_job}"[.[]* ]]; then
+    printf 'Job Id: %s\n    job_state = R\n' "${id}"
+    exit 0
+fi
+echo "qstat: Unknown Job Id ${id}" >&2
+exit 153
+EOF
+chmod +x ./bin/qstat
+export PATH="$(pwd)/bin:${PATH}"
+unset fake_running_job
+
 npass=0; nfail=0
 check ()
 {
@@ -87,6 +105,7 @@ ${launch_cf} -A TEST -l walltime=0:10:00 --ppn 6 --steps-per-node 6 --rerun 1001
 status=$?
 echo
 check "--rerun 1001 succeeds" [ ${status} -eq 0 ]
+[ ${status} -eq 0 ] || sed 's/^/        /' ./rerun.1001.log | head -20
 check "it writes ./cmdfile.1001.rerun" [ -f ./cmdfile.1001.rerun ]
 
 expected="step=6; echo seven; exit 3
@@ -97,7 +116,7 @@ step=11; echo step 12
 step=17; sleep 60"
 check "it reruns exactly steps 7, 9-12 and 18" [ "$(rerun_steps ./cmdfile.1001.rerun)" = "${expected}" ]
 check "step 7: exited with status 3"      grep -q "^# step 7 of job 1001: exited with status 3, see stdout-1001.test/step-00007.out" ./cmdfile.1001.rerun
-check "steps 9-12: subjob 2 did not run"  [ $(grep -c "never ran: subjob 2 did not run" ./cmdfile.1001.rerun) -eq 4 ]
+check "steps 9-12: subjob 2 did not run"  [ "$(grep -c "never ran: subjob 2 did not run" ./cmdfile.1001.rerun 2>/dev/null)" = 4 ]
 check "step 18: cut short"                grep -q "^# step 18 of job 1001: cut short: subjob 4 stopped while it ran" ./cmdfile.1001.rerun
 check "the job submits the rerun file"    grep -q "^#   command file    : .*/cmdfile.1001.rerun$" ./job1002.pbs
 
@@ -132,6 +151,11 @@ ${launch_cf} -A TEST -l walltime=0:10:00 --rerun 9999 --dryrun > ./rerun.9999.lo
 status=$?
 ok=no; [ ${status} -ne 0 ] && grep -q "no PBS output files of job 9999" ./rerun.9999.log && ok=yes
 check "--rerun of an unknown job fails" [ ${ok} = yes ]
+
+fake_running_job=1004 ${launch_cf} -A TEST -l walltime=0:10:00 --rerun 1004 --dryrun > ./rerun.running.log 2>&1
+status=$?
+ok=no; [ ${status} -ne 0 ] && grep -q "is still queued or running (state R)" ./rerun.running.log && ok=yes
+check "--rerun refuses a job that is still running" [ ${ok} = yes ]
 
 echo 'echo d' >> ./ok_cmdfile
 ${launch_cf} -A TEST -l walltime=0:10:00 --rerun 1004 --dryrun > ./rerun.changed.log 2>&1

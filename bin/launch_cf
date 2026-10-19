@@ -346,7 +346,7 @@ parse_args ()
 # command file to submit.
 make_rerun_cmdfile ()
 {
-    local seq server outputs names logdir d qid listing N spn original raw t i n_failed
+    local seq server outputs names logdir d qid state listing N spn original raw t i n_failed
     local kept_step='^step=[0-9]+; '
     local reasons=()
 
@@ -373,11 +373,17 @@ make_rerun_cmdfile ()
     done
     [ -z "${server}" -a -n "${logdir}" ] && [[ "${logdir}" == *.* ]] && server="${logdir#*.}"
 
-    # a job still queued or running has steps yet to run.
+    # a job still queued or running has steps yet to run.  Go by the state
+    # qstat reports for the job, not by its exit status: a finished job is
+    # reported with none (or as F or X), and so is one PBS does not know.
     if command -v qstat >/dev/null 2>&1; then
         if [[ "${outputs[0]}" =~ \.o[0-9]+\.[0-9]+$ ]]; then qid="${seq}[]"; else qid="${seq}"; fi
         qid="${qid}${server:+.${server}}"
-        qstat "${qid}" >/dev/null 2>&1 && { echo "ERROR: job ${qid} is still queued or running; rerun its steps once it has finished"; exit 1; }
+        state=$(qstat -f "${qid}" 2>/dev/null | awk -F' = ' '$1 ~ /^[[:space:]]*job_state$/ { print $2; exit }')
+        case "${state}" in
+            ""|"F"|"X") ;;
+            *) echo "ERROR: job ${qid} is still queued or running (state ${state}); rerun its steps once it has finished"; exit 1 ;;
+        esac
     fi
 
     # A step succeeded only if its subjob reported it finishing with exit
