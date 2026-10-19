@@ -25,10 +25,11 @@ Anywhere, without submitting jobs:
 ```
 make check_dryrun                 # generate the PBS scripts launch_cf would submit
 ./check_results.sh dryrun         # compare them with the saved copies
+make check_rerun                  # test launch_cf --rerun
 ```
 
 Before merging a change to `launch_cf` or `share/launch_cf.pbs`, run the dry-run
-check and both system suites, `check_derecho` on Derecho and `check_casper` on
+and rerun checks and both system suites, `check_derecho` on Derecho and `check_casper` on
 Casper.
 
 ## Before you start
@@ -59,6 +60,7 @@ Casper.
 | `make check_casper` | submits the Casper suite from `./casper/` |
 | `make check_dryrun` | generates the PBS scripts for the dry-run suite in `./dryrun/`, without submitting anything |
 | `make save_dryrun` | regenerates the dry-run scripts and saves them as the new expected copies |
+| `make check_rerun` | tests `launch_cf --rerun` in `./rerun/`, without submitting anything |
 | `make clean_derecho`, `make clean_casper` | remove `./derecho/` or `./casper/`, and with them all of that suite's results |
 | `make all` | builds `gs_openmp` and `omp_cmdfile` only |
 
@@ -207,6 +209,25 @@ If you change what `launch_cf` generates on purpose:
 
 A new dry-run test fails with "no saved copy" until you save it the same way.
 
+### The rerun check
+
+`make check_rerun` runs [`check_rerun.sh`](check_rerun.sh), which tests
+`launch_cf --rerun` without a scheduler. It generates job scripts with
+`--dryrun`, then runs their array elements itself, as PBS would, with a fake
+`PBS_NODEFILE`. The first job has 20 steps over 5 array elements:
+
+* step 7 exits with status 3;
+* element 2 never runs, as if PBS rejected it;
+* element 4 is killed while step 18 still runs, as at the end of a walltime.
+
+The check passes if `--rerun` picks out exactly steps 7, 9-12 and 18 for the
+right reasons, and if step 10 still sees its original `${step}` when rerun.
+A rerun of the rerun job must then pick out just steps 7 and 18, which fail
+again. It also checks that `--rerun` finds nothing to rerun for a job that
+succeeded, and refuses an unknown job or a command file that has changed.
+It prints `PASS` or `FAIL` for each check and exits 0 only if all of them
+pass. It takes about 10 seconds, and leaves its files in `./rerun/`.
+
 ### Adding a test
 
 * **To a system suite:** add a `launch_cf` line to `check_derecho` or
@@ -258,9 +279,10 @@ PATH=$(cd ../../bin && pwd):$PATH ./run.sh
 |---|---|
 | `Makefile` | builds the test programs and runs the suites |
 | `check_results.sh` | checks the results of a suite |
+| `check_rerun.sh` | tests `launch_cf --rerun`, run by `make check_rerun` |
 | `cmdfile`, `smalltest` | command files used by the suites |
 | `hello_world_openmp.C` | source of `hello_world_openmp`, built by `make` |
 | `dryrun_expected/` | saved copies of the dry-run scripts |
 | `developtest`, `redirection` | command files for manual tests |
 | `qcmd/run.sh` | `qcmd` tests |
-| `derecho/`, `casper/`, `dryrun/` | created by the tests, ignored by git |
+| `derecho/`, `casper/`, `dryrun/`, `rerun/` | created by the tests, ignored by git |

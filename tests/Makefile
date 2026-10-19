@@ -86,6 +86,11 @@ check_dryrun:
 	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --nodes 5 --nthreads 4 --dryrun --script ./dryrun/nodes.pbs ./cmdfile # spread over 5 nodes, in 8 waves
 	@echo && echo "generated scripts:" && ls -1 ./dryrun/
 
+# scheduler-free check of "launch_cf --rerun": runs launch_cf job scripts
+# here, as PBS would, and checks the steps --rerun picks out to run again.
+check_rerun:
+	./check_rerun.sh
+
 # after an intended change to the generated scripts: review the differences
 # reported by "./check_results.sh dryrun", then replace the saved copies.
 save_dryrun: check_dryrun

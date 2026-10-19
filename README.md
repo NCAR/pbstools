@@ -109,6 +109,7 @@ launch_cf -A PROJECT -l walltime=1:00:00 ./my_cmdfile
 launch_cf -A PROJECT -l walltime=1:00:00 --nthreads 4 --steps-per-node 32 ./omp_cmdfile
 launch_cf -A PROJECT -l walltime=4:00:00 --nodes 4 ./my_cmdfile    # spread the steps over 4 nodes
 launch_cf -A PROJECT -l walltime=1:00:00 --dryrun ./my_cmdfile   # write the job script, don't submit it
+launch_cf -A PROJECT -l walltime=1:00:00 --rerun 1234567          # resubmit the steps of job 1234567 that didn't succeed
 ```
 
 **The command file**
@@ -132,6 +133,7 @@ launch_cf -A PROJECT -l walltime=1:00:00 --dryrun ./my_cmdfile   # write the job
 | `--cpu_type TYPE` | CPU type | | |
 | `--random_start_delay SECONDS` | wait up to this long, at random, before starting each step | 0 | 0 |
 | `--script FILE` | name of the generated job script | `./launch_cf.<command file>.<timestamp>.pbs` | |
+| `--rerun JOBID` | submit the steps of an earlier job that didn't succeed; see below | | |
 | `--dryrun`, `--dry-run` | write the job script and report what it requests, but don't submit it | | |
 
 `-J` and `-l select=` are worked out from the steps and options above, so they can't be given.
@@ -143,6 +145,24 @@ Each node runs up to CPUs ÷ threads steps at once. A node can be given more ste
 * **Allow walltime for every wave.** `launch_cf` can't know how long the steps take, but it reports how many waves each node runs. Request enough walltime for that many steps in a row.
 * **Unless you give `--ppn`, each node gets enough CPUs to run all of its steps at once**, up to a full node. This matters on Casper, where the default is one CPU. With `--ppn`, each node runs only as many steps at once as fit in those CPUs.
 * **Each step's exit status** is reported in the array element's output file when the step finishes.
+
+**Rerunning the steps that didn't succeed**
+
+`launch_cf --rerun JOBID` finds the steps of an earlier `launch_cf` job that didn't succeed, and submits just those. Run it from the directory that job was submitted from, once it has finished. For example:
+
+```
+$ launch_cf -A PROJECT -l walltime=0:10:00 --rerun 6285048
+Job 6285048: 1 of 1200 steps did not succeed:
+  step 332 of job 6285048: never ran: subjob 331 did not run
+Wrote ./cmdfile.6285048.rerun, to submit as the command file.
+...
+```
+
+* **A step succeeded only if its array element reported it finishing with exit status 0.** So it catches steps that exited with an error, and steps of an array element that was cut short (walltime, memory, preemption). It also catches steps of an element that never ran at all, e.g. because PBS rejected it on its node.
+* **The steps are written to a new command file**, `./<command file>.<JOBID>.rerun`, with a comment saying why each is rerun, then submitted like any other. Use `--dryrun` to see the list without submitting it.
+* **The other options aren't taken from the earlier job.** Give `-A`, `-l walltime=` and any others again, and choose `--steps-per-node` or `--nodes` for the smaller number of steps.
+* **Each step keeps its `${step}`** from the original job, so steps that use it, e.g. to name their output, write the same files. `--rerun` of a rerun job works the same way.
+* **Jobs run with an older `launch_cf`** don't record their command file, so give it as well: `launch_cf ... --rerun JOBID ./cmdfile`. Jobs from before steps reported their exit status can't be rerun this way.
 
 **What it produces**
 

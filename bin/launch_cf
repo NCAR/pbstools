@@ -37,6 +37,7 @@ ${0} <-h|--help>
      <--cpu_type TYPE>
      <--random_start_delay MAX_DELAY (sec)>
      <--script PBS_SCRIPT_NAME>
+     <--rerun JOBID>
      <--dryrun|--dry-run>
      -A PBS_ACCOUNT -l walltime=01:00:00
      ... other PBS args ...
@@ -58,6 +59,15 @@ more steps than that, with --steps-per-node or --nodes, starts the next
 step each time a running one finishes, so its steps run in "waves".
 Allow walltime for that many steps in a row: launch_cf reports how many
 waves each node will run, but cannot know how long the steps take.
+
+--rerun JOBID submits the steps of an earlier launch_cf job that did not
+succeed: those that never ran, were cut short, or exited with an error.
+Run it from the directory that job was submitted from, where its PBS output
+files are.  It writes those steps to a new command file,
+./<command file>.<JOBID>.rerun, and submits that with the other options
+given, which are not taken from the earlier job.  Each rerun step keeps
+its original \${step}.  If the earlier job's output does not record its
+command file, give that command file as well.
 
 All options in "<>" brackets are optional.  Any unrecognized arguments
 are passed through directly to qsub.
@@ -83,6 +93,9 @@ Examples:
   # spreads the commands in ./cmdfile over 4 nodes, however many there are,
   # running as many at once on each node as it has CPUs:
   ${0} -A PBS_ACCOUNT -l walltime=4:00:00 --nodes 4 ./cmdfile
+
+  # resubmit the steps of job 1234567 that did not succeed:
+  ${0} -A PBS_ACCOUNT -l walltime=1:00:00 --rerun 1234567
 
   # generate ./my_job.pbs and show what would be submitted, but do not submit:
   ${0} -A PBS_ACCOUNT -l walltime=1:00:00 --script ./my_job.pbs --dryrun ./omp_cmdfile
@@ -157,6 +170,8 @@ parse_args ()
     # var defaults.
     execution_host="${NCAR_HOST}"
     command_file="./cmdfile"
+    unset command_file_given
+    unset rerun_job
     threads_per_step=1
     max_start_delay=0
     unset ppn
@@ -248,6 +263,12 @@ parse_args ()
                 shift
                 ;;
 
+            "--rerun")
+                shift
+                rerun_job=${1}
+                shift
+                ;;
+
             "--dryrun"|"--dry-run")
                 dryrun="yes"
                 shift
@@ -256,6 +277,7 @@ parse_args ()
             *)
                 if [ -f "${1}" ]; then
                     command_file="${1}"
+                    command_file_given="yes"
                     shift
                 elif [ "${1:0:1}" = "-" ]; then
                     # a PBS option, destined for a "#PBS" directive in the generated script.
@@ -316,6 +338,155 @@ parse_args ()
 
     return
 }
+
+#------------------------------------------------------------------
+# --rerun JOBID: from the PBS output files of job ${rerun_job} in the current
+# directory, write a command file of the steps that did not succeed -- those
+# that never ran, were cut short, or exited with an error -- and make it the
+# command file to submit.
+make_rerun_cmdfile ()
+{
+    local seq server outputs names logdir d qid listing N spn original raw t i n_failed
+    local kept_step='^step=[0-9]+; '
+    local reasons=()
+
+    seq="${rerun_job%%[^0-9]*}"
+    [ -n "${seq}" ] || { echo "ERROR: --rerun expects a job ID, e.g. 1234567 or 1234567[].casper-pbs, not \"${rerun_job}\""; exit 1; }
+    [[ "${rerun_job}" == *.* ]] && server="${rerun_job#*.}"
+
+    # the job's PBS output files: <job name>.o<seq>, or <job name>.o<seq>.<index>
+    # for each element of a job array.
+    shopt -s nullglob
+    outputs=( *.o${seq} *.o${seq}.[0-9]* )
+    shopt -u nullglob
+    if [ ${#outputs[@]} -eq 0 ]; then
+        echo "ERROR: no PBS output files of job ${seq} (*.o${seq}*) in $(pwd)"
+        echo "       Run launch_cf --rerun from the directory the job was submitted from."
+        exit 1
+    fi
+    names=$(printf '%s\n' "${outputs[@]}" | sed -E 's/\.o[0-9]+(\.[0-9]+)?$//' | sort -u)
+    [ $(echo "${names}" | wc -l) -eq 1 ] || { echo "ERROR: $(pwd) has output files of more than one job numbered ${seq}: $(echo ${names})"; exit 1; }
+
+    # the per-step logs, named for the job id, e.g. stdout-1234567.casper-pbs
+    for d in "stdout-${seq}${server:+.${server}}" stdout-${seq} stdout-${seq}.*; do
+        [ -d "${d}" ] && { logdir="${d}"; break; }
+    done
+    [ -z "${server}" -a -n "${logdir}" ] && [[ "${logdir}" == *.* ]] && server="${logdir#*.}"
+
+    # a job still queued or running has steps yet to run.
+    if command -v qstat >/dev/null 2>&1; then
+        if [[ "${outputs[0]}" =~ \.o[0-9]+\.[0-9]+$ ]]; then qid="${seq}[]"; else qid="${seq}"; fi
+        qid="${qid}${server:+.${server}}"
+        qstat "${qid}" >/dev/null 2>&1 && { echo "ERROR: job ${qid} is still queued or running; rerun its steps once it has finished"; exit 1; }
+    fi
+
+    # A step succeeded only if its subjob reported it finishing with exit
+    # status 0.  Prints the job's total steps, steps/node and command file,
+    # then one "step<TAB>reason" line for each step that did not succeed.
+    listing=$(awk -v logdir="${logdir}" '
+        FNR == 1 { idx = "" }
+        index($0, "(#steps at once) = ") == 1 { reports_finishing = 1 }
+        index($0, "(#steps/node) x (#threads/step) = ") == 1 { spn = substr($0, 35) + 0 }
+        /^command_file: / && cf == "" { cf = substr($0, 15) }
+        /^n_total_steps: [0-9]+, PBS_ARRAY_INDEX=[0-9]+/ {
+            N = $2 + 0
+            match($0, /PBS_ARRAY_INDEX=[0-9]+/); idx = substr($0, RSTART + 16, RLENGTH - 16) + 0
+            ran[idx] = 1
+        }
+        match($0, / launching step [0-9]+:/) { launched[substr($0, RSTART + 16, RLENGTH - 17) + 0] = 1 }
+        match($0, / finished  step [0-9]+: exit status [0-9]+/) {
+            split(substr($0, RSTART + 16, RLENGTH - 16), t, ": exit status ")
+            status[t[1] + 0] = t[2] + 0
+        }
+        /^Done: PBS_ARRAY_INDEX=/ && idx != "" { done[idx] = 1 }
+        END {
+            if (!reports_finishing) { print "old"; exit }
+            if (N == "" || spn == "") { print "none"; exit }
+            printf "%d\t%d\t%s\n", N, spn, cf
+            for (i = 1; i <= N; i++) {
+                if ((i in status) && status[i] == 0) continue
+                sub_idx = int((i - 1) / spn)
+                if (i in status)
+                    reason = sprintf("exited with status %d%s", status[i], (logdir == "" ? "" : sprintf(", see %s/step-%05d.out", logdir, i)))
+                else if ((i in launched) && !(sub_idx in done))
+                    reason = "cut short: subjob " sub_idx " stopped while it ran"
+                else if (i in launched)
+                    reason = "launched but never reported finishing"
+                else if (!(sub_idx in ran))
+                    reason = "never ran: subjob " sub_idx " did not run"
+                else
+                    reason = "never ran: subjob " sub_idx " stopped first"
+                print i "\t" reason
+            }
+        }' "${outputs[@]}")
+
+    case "${listing}" in
+        "old")
+            echo "ERROR: job ${seq} was run by a version of launch_cf that does not report its steps finishing,"
+            echo "       so the steps that did not succeed cannot be told apart."
+            exit 1 ;;
+        "none")
+            echo "ERROR: none of the subjobs of job ${seq} started, so its layout is unknown."
+            echo "       Resubmit its job script with qsub instead."
+            exit 1 ;;
+    esac
+    IFS=$'\t' read -r N spn original <<< "$(head -1 <<< "${listing}")"
+
+    # the command file the job ran, which a command file given here replaces
+    if [ -n "${command_file_given}" ]; then
+        [ -n "${original}" -a "$(readlink -f "${command_file}")" != "${original}" ] && \
+            echo "NOTE: using ${command_file}, not ${original} recorded by job ${seq}"
+        original="${command_file}"
+    elif [ -z "${original}" ]; then
+        echo "ERROR: the output of job ${seq} does not record its command file; give it after --rerun ${rerun_job}"
+        exit 1
+    fi
+    [ -r "${original}" ] || { echo "ERROR: cannot read ${original}, the command file of job ${seq}"; exit 1; }
+    [ $(count_non_comment_non_empty_lines "${original}") -eq ${N} ] || \
+        { echo "ERROR: ${original} no longer has the ${N} steps job ${seq} ran, so its steps cannot be matched"; exit 1; }
+
+    n_failed=$(( $(wc -l <<< "${listing}") - 1 ))
+    if [ ${n_failed} -eq 0 ]; then
+        echo "All ${N} steps of job ${seq} succeeded; there is nothing to rerun."
+        exit 0
+    fi
+
+    echo "Job ${seq}: ${n_failed} of ${N} steps did not succeed:"
+    tail -n +2 <<< "${listing}" | awk -F'\t' -v seq=${seq} 'NR <= 10 { printf "  step %d of job %s: %s\n", $1, seq, $2 } END { if (NR > 10) printf "  ... and %d more\n", NR - 10 }'
+
+    while IFS=$'\t' read -r i t; do
+        reasons[${i}]="${t}"
+    done < <(tail -n +2 <<< "${listing}")
+
+    # copy those steps from the command file, counting steps exactly as
+    # count_non_comment_non_empty_lines does.  Each keeps its original ${step},
+    # which a step of an earlier rerun already sets.
+    rerun_file="./$(basename "${original}" | sed -E 's/\.[0-9]+\.rerun$//').${seq}.rerun"
+    {
+        echo "# the ${n_failed} steps of job ${rerun_job} that did not succeed, out of ${N} in"
+        echo "# ${original}"
+        echo "# written by: ${launch_cf_cmdline}"
+        i=0
+        while IFS= read -r raw; do
+            t="${raw#"${raw%%[![:space:]]*}"}"
+            [[ ${t:0:1} == "#" || -z "${t}" ]] && continue
+            i=$((i + 1))
+            [ -n "${reasons[${i}]}" ] || continue
+            echo "# step ${i} of job ${seq}: ${reasons[${i}]}"
+            if [[ "${raw}" =~ ${kept_step} ]]; then
+                echo "${raw}"
+            else
+                echo "step=$((i - 1)); ${raw}"
+            fi
+        done < "${original}"
+    } > "${rerun_file}" || { echo "ERROR: cannot write ${rerun_file}"; exit 1; }
+
+    echo "Wrote ${rerun_file}, to submit as the command file."
+    echo
+    command_file="${rerun_file}"
+    return 0
+}
+
 
 #------------------------------------------------------------------
 # write the complete, self-contained PBS job script we will submit.
@@ -382,6 +553,8 @@ EOF
 #------------------------------------------------------------------
 # defaults & user arguments
 parse_args "${@}"
+
+[ -n "${rerun_job}" ] && make_rerun_cmdfile
 
 #------------------------------------------------------------------
 # error & consistency checking

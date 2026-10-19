@@ -98,6 +98,7 @@ start_idx=$(( ${PBS_ARRAY_INDEX} * ${steps_per_node} ))
 stop_idx=$(( ${start_idx} + ${steps_per_node} - 1 ))
 
 echo "n_total_steps: ${n_total_steps}, PBS_ARRAY_INDEX=${PBS_ARRAY_INDEX}"
+echo "command_file: $(readlink -f ${command_file})"
 echo "start_idx=${start_idx} stop_idx=${stop_idx} "
 [ ${max_start_delay} -ne 0 ] && echo "max_start_delay=${max_start_delay}"
 
