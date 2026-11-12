@@ -33,6 +33,7 @@ ${0} <-h|--help>
      <--ppn|--processors-per-node #CPUS>
      <--steps-per-node #Steps/node | --nodes #Nodes>
      <--nthreads|--threads-per-step #Threads/step>
+     <--sync-waves>
      <--mem|--memory RAM/node>
      <--cpu_type TYPE>
      <--random_start_delay MAX_DELAY (sec)>
@@ -59,6 +60,12 @@ more steps than that, with --steps-per-node or --nodes, starts the next
 step each time a running one finishes, so its steps run in "waves".
 Allow walltime for that many steps in a row: launch_cf reports how many
 waves each node will run, but cannot know how long the steps take.
+
+--sync-waves runs each node's waves one after the other instead: a wave
+starts only once every step of the wave before it has finished.  Each wave
+then takes as long as its longest step, but the steps of a wave always
+occupy the node's slots together, which keeps steps that bind their threads
+to particular cores from overlapping steps of another wave.
 
 --rerun JOBID submits the steps of an earlier launch_cf job that did not
 succeed: those that never ran, were cut short, or exited with an error.
@@ -93,6 +100,10 @@ Examples:
   # spreads the commands in ./cmdfile over 4 nodes, however many there are,
   # running as many at once on each node as it has CPUs:
   ${0} -A PBS_ACCOUNT -l walltime=4:00:00 --nodes 4 ./cmdfile
+
+  # as above, but each node starts its next wave of steps only once every
+  # step of the one before it has finished:
+  ${0} -A PBS_ACCOUNT -l walltime=4:00:00 --nodes 4 --sync-waves ./cmdfile
 
   # resubmit the steps of job 1234567 that did not succeed:
   ${0} -A PBS_ACCOUNT -l walltime=1:00:00 --rerun 1234567
@@ -178,6 +189,7 @@ parse_args ()
     unset steps_per_node
     unset nodes
     unset ppn_given
+    sync_waves="no"
     unset cpu_type
     unset mem_limit
     unset queue
@@ -230,6 +242,11 @@ parse_args ()
             "--nodes")
                 shift
                 nodes=${1}
+                shift
+                ;;
+
+            "--sync-waves")
+                sync_waves="yes"
                 shift
                 ;;
 
@@ -517,7 +534,7 @@ write_pbs_script ()
 #   command file    : ${command_file_abs}
 #   total steps     : ${n_total_steps}
 #   steps / node    : ${steps_per_node}
-#   steps at once   : ${steps_at_once} per node, in ${waves_per_node} wave(s)
+#   steps at once   : ${steps_at_once} per node, in ${waves_per_node} wave(s)${waves_desc}
 #   threads / step  : ${threads_per_step}
 #   cpus / node     : ${ppn}
 #   array indices   : ${array_desc}
@@ -536,6 +553,10 @@ write_pbs_script ()
 command_file="\${command_file:-${command_file_abs}}"
 n_total_steps="\${n_total_steps:-${n_total_steps}}"
 max_start_delay="\${max_start_delay:-${max_start_delay}}"
+# "yes" to start each wave of steps only once every step of the wave before
+# it has finished (--sync-waves); "no" to start each step as soon as a slot
+# is free.
+sync_waves="\${sync_waves:-${sync_waves}}"
 # the steps each array element runs.  The job array was sized for it, so it
 # cannot be overridden.
 steps_per_node=${steps_per_node}
@@ -619,7 +640,15 @@ echo "Running $((${njobs}+1)) jobs with ${steps_per_node} steps / node on NCAR r
 if [ ${waves_per_node} -gt 1 ]; then
     echo "NOTE: each node runs ${steps_at_once} steps at once, so its ${steps_per_node} steps run in ${waves_per_node} waves."
     echo "      Request walltime for up to ${waves_per_node} steps in a row."
+    if [ "${sync_waves}" = "yes" ]; then
+        echo "      With --sync-waves, each wave starts only once every step of the one before it has"
+        echo "      finished, so each wave takes as long as its longest step."
+    fi
+elif [ "${sync_waves}" = "yes" ]; then
+    echo "NOTE: each node runs all of its steps at once, in a single wave, so --sync-waves has no effect."
 fi
+waves_desc=""
+[ "${sync_waves}" = "yes" ] && waves_desc=", each starting once the one before it has finished"
 
 # mpiprocs is the number of steps each node runs at once.
 ss="1:ncpus=${ppn}:mpiprocs=${steps_at_once}:ompthreads=${threads_per_step}:mem=${mem_limit}"

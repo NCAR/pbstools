@@ -37,6 +37,10 @@
 command_file="${command_file:-<submission dir>/cmdfile}"
 n_total_steps="${n_total_steps:-1200}"
 max_start_delay="${max_start_delay:-0}"
+# "yes" to start each wave of steps only once every step of the wave before
+# it has finished (--sync-waves); "no" to start each step as soon as a slot
+# is free.
+sync_waves="${sync_waves:-no}"
 # the steps each array element runs.  The job array was sized for it, so it
 # cannot be overridden.
 steps_per_node=384
@@ -111,8 +115,17 @@ steps_at_once=${nranks_per_node}
 [ ${steps_at_once} -gt ${steps_per_node} ] && steps_at_once=${steps_per_node}
 waves_per_node=$(( (${steps_per_node} + ${steps_at_once} - 1) / ${steps_at_once} ))
 
+# sync_waves, optional, from environment: "yes" to start each wave of steps
+# only once every step of the wave before it has finished.
+sync_waves="${sync_waves:-no}"
+case "${sync_waves}" in
+    "yes"|"no") ;;
+    *) echo "ERROR: sync_waves must be \"yes\" or \"no\", not \"${sync_waves}\""; exit 1 ;;
+esac
+
 echo "(#steps/node) x (#threads/step) = ${steps_per_node} x ${OMP_NUM_THREADS}"
 echo "(#steps at once) = ${steps_at_once}, in ${waves_per_node} wave(s)"
+[ "${sync_waves}" = "yes" ] && echo "waves: synchronized, each starts once every step of the one before it has finished"
 
 if [ -z "${n_total_steps}" ]; then
     echo "Failed to get \${n_total_steps} from environment!"
@@ -163,21 +176,35 @@ else
     wait_for_a_step="sleep 1"
 fi
 
+# the waves this node runs: the last array element may have fewer steps, and so fewer waves
+my_steps=$(( (${stop_idx} < ${n_total_steps} ? ${stop_idx} + 1 : ${n_total_steps}) - ${start_idx} ))
+my_waves=$(( (${my_steps} + ${steps_at_once} - 1) / ${steps_at_once} ))
+
 # loop over each 'step' for which we are responsible.
 # launch our ${command_file} lines, in the background, up to ${steps_at_once}
-# at a time: once that many are running, start the next as soon as one finishes.
+# at a time: once that many are running, start the next as soon as one finishes,
+# or, with sync_waves, once all of them have finished.
 for step in $(seq ${start_idx} ${stop_idx}); do
 
     # the last PBS_ARRAY_INDEX could go past n_total_steps if the number of ${command_file}
     # is not evenly divisible by steps_per_node - don't let it
     [ ${step} -ge ${n_total_steps} ] && break
 
-    # wait for a free slot
-    running=( $(jobs -rp) )
-    while [ ${#running[@]} -ge ${steps_at_once} ]; do
-        ${wait_for_a_step}
+    if [ "${sync_waves}" = "yes" ]; then
+        # the first step of a wave waits for every step of the wave before it
+        if [ $(( (${step} - ${start_idx}) % ${steps_at_once} )) -eq 0 ]; then
+            wait
+            printf "%s starting  wave %d of %d\n"  "[$(date +%Y-%m-%d" "%T" "%Z)]" \
+                $(( (${step} - ${start_idx}) / ${steps_at_once} + 1 )) ${my_waves}
+        fi
+    else
+        # wait for a free slot
         running=( $(jobs -rp) )
-    done
+        while [ ${#running[@]} -ge ${steps_at_once} ]; do
+            ${wait_for_a_step}
+            running=( $(jobs -rp) )
+        done
+    fi
 
     # get the command line arguments from ${command_file} for this step.
     # handles # comment lines in step too...)

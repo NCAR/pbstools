@@ -53,6 +53,7 @@ check_derecho: gs_openmp omp_cmdfile hw_cmdfile waves_cmdfile
 	cd derecho && echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --processors-per-node 128 --nthreads 8 --steps-per-node 16 --memory 100G --queue preempt --cpu_type milan --random_start_delay 5 -N all_args_test ./omp_cmdfile # all args
 	cd derecho && echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --steps-per-node 200 ./waves_cmdfile # 200 steps/node, 128 at once
 	cd derecho && echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --nodes 2 --nthreads 4 ./waves_cmdfile # 150 steps/node, 32 at once
+	cd derecho && echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --nodes 2 --nthreads 4 --sync-waves -N sync_waves_test ./waves_cmdfile # as above, each wave after the one before
 
 check_casper: gs_openmp omp_cmdfile hw_cmdfile waves_cmdfile
 	$(call setup_suite_dir,casper)
@@ -62,6 +63,7 @@ check_casper: gs_openmp omp_cmdfile hw_cmdfile waves_cmdfile
 	cd casper && echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 -q main@desched1 --nthreads 4 -N casper2derecho_openmp_test ./omp_cmdfile # openmp test, derecho cross submission
 	cd casper && echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --ppn 8 --steps-per-node 40 ./waves_cmdfile # 40 steps/node, 8 at once
 	cd casper && echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --nodes 3 ./waves_cmdfile # 100 steps/node, 36 at once (a full node)
+	cd casper && echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --ppn 8 --steps-per-node 40 --sync-waves -N sync_waves_test ./waves_cmdfile # 40 steps/node, 8 at once, each wave after the one before
 #	cd casper && echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --processors-per-node 32 --nthreads 8 --steps-per-node 4 --memory 300G --queue casper --cpu_type cascadelake --random_start_delay 5 -N all_args_test ./omp_cmdfile # all args
 
 check: check_$(NCAR_HOST)
@@ -84,12 +86,18 @@ check_dryrun:
 	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --nthreads 8 --steps-per-node 16 -l job_priority=economy -N all_args_test --random_start_delay 5 --dryrun --script ./dryrun/all_args.pbs ./cmdfile # pass-through args, -N override
 	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --steps-per-node 384 --dryrun --script ./dryrun/waves.pbs ./cmdfile # 384 steps/node, in 3 waves
 	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --nodes 5 --nthreads 4 --dryrun --script ./dryrun/nodes.pbs ./cmdfile # spread over 5 nodes, in 8 waves
+	echo && echo && $(launch_cf) -A $(account) -l walltime=0:10:00 --nodes 5 --nthreads 4 --sync-waves --dryrun --script ./dryrun/sync_waves.pbs ./cmdfile # as above, each wave after the one before
 	@echo && echo "generated scripts:" && ls -1 ./dryrun/
 
 # scheduler-free check of "launch_cf --rerun": runs launch_cf job scripts
 # here, as PBS would, and checks the steps --rerun picks out to run again.
 check_rerun:
 	./check_rerun.sh
+
+# scheduler-free check of how a node runs its steps in waves, with and
+# without --sync-waves: runs launch_cf job scripts here, as PBS would.
+check_waves:
+	./check_waves.sh
 
 # after an intended change to the generated scripts: review the differences
 # reported by "./check_results.sh dryrun", then replace the saved copies.

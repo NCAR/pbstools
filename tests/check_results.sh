@@ -40,10 +40,12 @@ EOF
 #------------------------------------------------------------------
 # the tests in each suite, mirroring the check_derecho & check_casper
 # targets in ./Makefile -- keep the two in sync.
-#   label | PBS job name | command file | steps/node | threads/step | steps at once
+#   label | PBS job name | command file | steps/node | threads/step | steps at once | sync
 # steps/node "all" means every step fits on one node (a single, non-array job).
 # steps at once, if given and less than steps/node, means each node runs its
 # steps in waves; otherwise each node runs all of its steps at once.
+# sync "sync" means the test runs with --sync-waves, so that each wave starts
+# only once every step of the wave before it has finished.
 expected_tests ()
 {
     case "${1}" in
@@ -57,6 +59,7 @@ derecho -> casper|derecho2casper_openmp_test|omp_cmdfile|8|4
 all args|all_args_test|omp_cmdfile|16|8
 waves|launch_cf|waves_cmdfile|200|1|128
 nodes|launch_cf|waves_cmdfile|150|4|32
+sync waves|sync_waves_test|waves_cmdfile|150|4|32|sync
 EOF
             ;;
         "casper")
@@ -67,6 +70,7 @@ openmp|launch_cf|omp_cmdfile|8|4
 casper -> derecho|casper2derecho_openmp_test|omp_cmdfile|32|4
 waves|launch_cf|waves_cmdfile|40|1|8
 nodes|launch_cf|waves_cmdfile|100|1|36
+sync waves|sync_waves_test|waves_cmdfile|40|1|8|sync
 EOF
             ;;
     esac
@@ -93,10 +97,12 @@ count_non_comment_non_empty_lines ()
 # one tab-separated record per PBS output file in the current directory,
 # newest first:
 #   name seq rank idx N spn thr done nerr steps first_error file took
-#   at_once max_running finished failed
+#   at_once max_running finished failed sync early
 # (fields not reported by the job are "-").  max_running is the most steps
 # launched but not yet reported finished, read in the order the job wrote them;
 # failed lists "step:exit status" for each step that exited with an error.
+# sync is 1 if the job reports synchronized waves, and early counts the waves
+# after the first that started while a step of an earlier wave still ran.
 scan_outputs ()
 {
     ls -t 2>/dev/null | grep -E '\.o[0-9]+(\.[0-9]+)?$' | awk '
@@ -111,7 +117,7 @@ scan_outputs ()
         idx = (np > 1) ? p[2] : "-"
 
         N = "-"; spn = "-"; thr = "-"; done = 0; nerr = 0; steps = ""; err = "-"; took = 0
-        at_once = "-"; running = 0; maxrun = 0; fin = ""; failed = ""
+        at_once = "-"; running = 0; maxrun = 0; fin = ""; failed = ""; sync = 0; nlaunched = 0; early = 0
         while ((getline line < f) > 0) {
             if (index(line, "(#steps/node) x (#threads/step) = ") == 1) {
                 split(substr(line, 35), t, " x ")
@@ -124,8 +130,12 @@ scan_outputs ()
                 idx = substr(line, RSTART+16, RLENGTH-16) + 0
             if (match(line, /^\(#steps at once\) = [0-9]+/))
                 at_once = substr(line, 20, RLENGTH-19) + 0
+            if (line ~ /^waves: synchronized/) sync = 1
             if (match(line, / launching step [0-9]+:/)) {
                 steps = steps "," (substr(line, RSTART+16, RLENGTH-17) + 0)
+                # the first step of each wave after the first
+                if (at_once != "-" && nlaunched > 0 && nlaunched % at_once == 0 && running > 0) early++
+                nlaunched++
                 if (++running > maxrun) maxrun = running
             }
             if (match(line, / finished  step [0-9]+: exit status [0-9]+/)) {
@@ -147,7 +157,7 @@ scan_outputs ()
         close(f)
         if (idx == "-") idx = 0
         print name, seq, NR, idx, N, spn, thr, done, nerr, (steps == "" ? "-" : steps), err, f, took, \
-            at_once, maxrun, (fin == "" ? "-" : substr(fin, 2)), (failed == "" ? "-" : substr(failed, 2))
+            at_once, maxrun, (fin == "" ? "-" : substr(fin, 2)), (failed == "" ? "-" : substr(failed, 2)), sync, early
     }'
 }
 
@@ -191,10 +201,10 @@ stopped_by_scheduler ()
 #------------------------------------------------------------------
 check_test ()
 {
-    local label="${1}" name="${2}" cf="${3}" spn="${4}" thr="${5}" at_once="${6}"
+    local label="${1}" name="${2}" cf="${3}" spn="${4}" thr="${5}" at_once="${6}" sync="${7}"
     local N nsub seq others detail logdir d server jobid answer
     local nfiles nmiss notdone stopped nerr err took miss smiss_done smiss_stopped sdup nolog
-    local maxrun wrong_at_once nofinish nfailed failed
+    local maxrun wrong_at_once nofinish nfailed failed wrong_sync early
     local nconfirmed=0 nunknown=0
     problems=()
 
@@ -228,8 +238,9 @@ check_test ()
     # those missing from a subjob that claims to be done.  So are steps that
     # never reported finishing, when the job reports steps finishing at all.
     IFS=$'\t' read -r nfiles nmiss notdone stopped nerr err took miss smiss_done smiss_stopped sdup nolog \
-                     maxrun wrong_at_once nofinish nfailed failed <<< "$(awk -F'\t' \
+                     maxrun wrong_at_once nofinish nfailed failed wrong_sync early <<< "$(awk -F'\t' \
         -v name="${name}" -v seq=${seq} -v N=${N} -v spn=${spn} -v nsub=${nsub} -v at_once=${at_once} \
+        -v sync=$([ "${sync}" = "sync" ] && echo 1 || echo 0) \
         -v haslogs=$([ -n "${logdir}" ] && echo 1 || echo 0) '
         # first input: the step log directory listing, which may be empty
         FILENAME == ARGV[1] { if ($0 ~ /^step-[0-9]+\.out$/) haslog[substr($0, 6, length($0) - 9) + 0] = 1; next }
@@ -244,6 +255,9 @@ check_test ()
             if ($14 != "-" && $14 + 0 != at_once) wrong_at_once++
             if ($16 != "-") { n = split($16, s, ","); for (i = 1; i <= n; i++) fin[s[i] + 0] = 1; hasfin = 1 }
             if ($17 != "-") { n = split($17, s, ","); for (i = 1; i <= n; i++) { nfailed++; if (nfailed <= 5) failed = failed (failed == "" ? "" : ",") s[i] } }
+            # a subjob that reports its layout should report sync as the test runs it
+            if ($5 != "-" && $18 + 0 != sync) wrong_sync++
+            early += $19
         }
         END {
             for (i = 0; i < nsub; i++)
@@ -260,16 +274,16 @@ check_test ()
                 else if (sub_idx in have) smiss_done++
             }
             if (nfailed > 5) failed = failed ",..."
-            printf "%d\t%d\t%d\t%s\t%d\t%s\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n", nfiles, nmiss, notdone, (stopped == "" ? "-" : stopped),
+            printf "%d\t%d\t%d\t%s\t%d\t%s\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\n", nfiles, nmiss, notdone, (stopped == "" ? "-" : stopped),
                 nerr, (err == "" ? "-" : err), took, (miss == "" ? "-" : miss), smiss_done, smiss_stopped, sdup, nolog,
-                maxrun, wrong_at_once, nofinish, nfailed, (failed == "" ? "-" : failed)
+                maxrun, wrong_at_once, nofinish, nfailed, (failed == "" ? "-" : failed), wrong_sync, early
         }' <(ls "${logdir:-/nonexistent}" 2>/dev/null) "${records}")"
 
     # never let a summary we could not compute pass as a clean result
-    [ -n "${failed}" ] || { problems=( "cannot summarize the output of job ${seq}" ); report FAIL "${label}" ""; return; }
+    [ -n "${early}" ] || { problems=( "cannot summarize the output of job ${seq}" ); report FAIL "${label}" ""; return; }
 
     detail="job ${seq} (${name}): $((nsub - nmiss))/${nsub} subjobs, ${N} steps, ${spn} steps/node x ${thr} threads/step"
-    [ ${at_once} -lt ${spn} ] && detail="${detail}, ${at_once} at once in $(( (spn + at_once - 1) / at_once )) waves"
+    [ ${at_once} -lt ${spn} ] && detail="${detail}, ${at_once} at once in $(( (spn + at_once - 1) / at_once ))${sync:+ synchronized} waves"
     detail="${detail}, longest subjob ${took}s"
     [ ${others} -gt 0 ] && detail="${detail}, ${others} older run(s) ignored"
 
@@ -285,6 +299,14 @@ check_test ()
     [ ${maxrun} -gt ${at_once} ] && problems+=( "up to ${maxrun} steps ran at once on a node, more than the ${at_once} requested" )
     [ ${at_once} -lt ${spn} -a ${maxrun} -lt ${at_once} ] && \
         problems+=( "at most ${maxrun} steps ran at once on a node, so its ${at_once} slots were never all in use" )
+
+    # with --sync-waves, no wave may start before the one before it has finished
+    if [ "${sync}" = "sync" ]; then
+        [ ${wrong_sync} -gt 0 ] && problems+=( "${wrong_sync} subjob(s) do not report synchronized waves" )
+        [ ${early} -gt 0 ]      && problems+=( "${early} wave(s) started while a step of the wave before still ran" )
+    else
+        [ ${wrong_sync} -gt 0 ] && problems+=( "${wrong_sync} subjob(s) report synchronized waves, which this test does not request" )
+    fi
 
     # the per-step logs
     if [ -n "${logdir}" ]; then
@@ -475,8 +497,8 @@ else
     echo
 
     selected_jobs=()
-    while IFS='|' read -r label name cf spn thr at_once <&3; do
-        check_test "${label}" "${name}" "${cf}" "${spn}" "${thr}" "${at_once}"
+    while IFS='|' read -r label name cf spn thr at_once sync <&3; do
+        check_test "${label}" "${name}" "${cf}" "${spn}" "${thr}" "${at_once}" "${sync}"
     done 3< <(expected_tests ${suite})
 
     unidentified=$(check_unidentified)

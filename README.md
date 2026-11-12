@@ -128,6 +128,7 @@ launch_cf -A PROJECT -l walltime=1:00:00 --rerun 1234567          # resubmit the
 | `--ppn`, `--processors-per-node N` | CPUs per node (Casper: at most 36) | 128 | 1 |
 | `--steps-per-node N` | steps each node runs; any beyond CPUs ÷ threads run in waves | CPUs ÷ threads | CPUs ÷ threads |
 | `--nodes N` | spread the steps evenly over N nodes, instead of giving `--steps-per-node` | | |
+| `--sync-waves` | start each wave of steps only once the wave before it has finished; see below | | |
 | `--nthreads`, `--threads-per-step N` | OpenMP threads per step | 1 | 1 |
 | `--mem`, `--memory SIZE` | memory per node | `235G` | `10G` |
 | `--cpu_type TYPE` | CPU type | | |
@@ -145,6 +146,7 @@ Each node runs up to CPUs ÷ threads steps at once. A node can be given more ste
 * **Allow walltime for every wave.** `launch_cf` can't know how long the steps take, but it reports how many waves each node runs. Request enough walltime for that many steps in a row.
 * **Unless you give `--ppn`, each node gets enough CPUs to run all of its steps at once**, up to a full node. This matters on Casper, where the default is one CPU. With `--ppn`, each node runs only as many steps at once as fit in those CPUs.
 * **Each step's exit status** is reported in the array element's output file when the step finishes.
+* **`--sync-waves` keeps the waves apart.** By default a step starts as soon as any slot is free, so the waves overlap. With `--sync-waves`, a node starts its next wave only once every step of the wave before it has finished, so the steps of a wave always occupy the node's slots together. This is useful when steps bind their threads to particular cores, since a step of one wave can never land on cores still used by a step of another. The cost is that each wave takes as long as its longest step. The steps of a wave are consecutive steps of the command file, and each array element reports `starting wave N of M` in its output.
 
 **Rerunning the steps that didn't succeed**
 
