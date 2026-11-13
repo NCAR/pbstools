@@ -215,13 +215,23 @@ for step in $(seq ${start_idx} ${stop_idx}); do
 
     printf "%s launching step %05d: %s\n"  "[$(date +%Y-%m-%d" "%T" "%Z)]" $((${step}+1)) "${step_cmd}"
 
+    # the step's log is named for its step number, or, for a step of a launch_cf --rerun command
+    # file, which begins "step=N; ", for its step number in the original job.
+    # (Its "finished" line then names the log.)
+    step_log=step-$(printf '%05d' $((${step}+1)) ).out
+    unset step_log_note
+    if [[ "${step_cmd}" =~ ^step=([0-9]+)\;\  ]]; then
+        step_log=step-$(printf '%05d' $((10#${BASH_REMATCH[1]}+1)) ).out
+        step_log_note=", output in ${step_log}"
+    fi
+
     # finally, launch our desired application with the requested arguments.  Redirect stdout/stderr to
     # the logs directory, and report when it finishes.  (The step runs in a subshell of its own, so
     # that it is reported even if it ends with "exit".)
     (
-        ( eval "$step_cmd" ) > ./${logs_dir}/step-$(printf '%05d' $((${step}+1)) ).out 2>&1
+        ( eval "$step_cmd" ) > ./${logs_dir}/${step_log} 2>&1
         step_status=$?
-        printf "%s finished  step %05d: exit status %d\n"  "[$(date +%Y-%m-%d" "%T" "%Z)]" $((${step}+1)) ${step_status}
+        printf "%s finished  step %05d: exit status %d%s\n"  "[$(date +%Y-%m-%d" "%T" "%Z)]" $((${step}+1)) ${step_status} "${step_log_note}"
     ) &
 done
 

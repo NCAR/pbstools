@@ -163,7 +163,8 @@ Wrote ./cmdfile.6285048.rerun, to submit as the command file.
 * **A step succeeded only if its array element reported it finishing with exit status 0.** So it catches steps that exited with an error, and steps of an array element that was cut short (walltime, memory, preemption). It also catches steps of an element that never ran at all, e.g. because PBS rejected it on its node.
 * **The steps are written to a new command file**, `./<command file>.<JOBID>.rerun`, with a comment saying why each is rerun, then submitted like any other. Use `--dryrun` to see the list without submitting it.
 * **The other options aren't taken from the earlier job.** Give `-A`, `-l walltime=` and any others again, and choose `--steps-per-node` or `--nodes` for the smaller number of steps.
-* **Each step keeps its `${step}`** from the original job, so steps that use it, e.g. to name their output, write the same files. `--rerun` of a rerun job works the same way.
+* **Each step keeps its `${step}`** from the original job, so steps that use it, e.g. to name their output, write the same files. Its log is named for its original step too: in the rerun job's `stdout-<job id>/`, step 17 of the original job writes `step-00017.out`, wherever it is in the rerun file. `--rerun` of a rerun job works the same way.
+* **`-r n` can't be used to stop PBS rerunning a job array**: `qsub` rejects a non-rerunnable array. Whether a preempted job goes back in the queue depends on the system, not on `-r`: Derecho's `preempt` queue deletes it. Either way, `--rerun` submits the steps it didn't finish.
 * **Jobs run with an older `launch_cf`** don't record their command file, so give it as well: `launch_cf ... --rerun JOBID ./cmdfile`. Jobs from before steps reported their exit status can't be rerun this way.
 
 **What it produces**

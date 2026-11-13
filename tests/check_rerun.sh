@@ -133,6 +133,8 @@ ${launch_cf} -A TEST -l walltime=0:10:00 --rerun 1002 --dryrun --script ./job100
 expected="step=6; echo seven; exit 3
 step=17; sleep 60"
 check "--rerun 1002 reruns just steps 7 and 18 again" [ "$(rerun_steps ./cmdfile.1002.rerun 2>/dev/null)" = "${expected}" ]
+check "the rerun names step 7's log for step 7, not its place (1)" [ -f stdout-1002.test/step-00007.out -a ! -f stdout-1002.test/step-00001.out ]
+check "... and --rerun 1002 points at that log" grep -q "^# step 1 of job 1002: exited with status 3, see stdout-1002.test/step-00007.out" ./cmdfile.1002.rerun
 
 #------------------------------------------------------------------
 # a job whose steps all succeeded, and other cases --rerun refuses
@@ -156,6 +158,11 @@ fake_running_job=1004 ${launch_cf} -A TEST -l walltime=0:10:00 --rerun 1004 --dr
 status=$?
 ok=no; [ ${status} -ne 0 ] && grep -q "is still queued or running (state R)" ./rerun.running.log && ok=yes
 check "--rerun refuses a job that is still running" [ ${ok} = yes ]
+
+fake_running_job=1005 ${launch_cf} -A TEST -l walltime=0:10:00 --rerun 1005 --dryrun > ./rerun.queued.log 2>&1
+status=$?
+ok=no; [ ${status} -ne 0 ] && grep -q "is still queued or running (state R)" ./rerun.queued.log && ok=yes
+check "--rerun of a job with no output yet says it is still queued" [ ${ok} = yes ]
 
 echo 'echo d' >> ./ok_cmdfile
 ${launch_cf} -A TEST -l walltime=0:10:00 --rerun 1004 --dryrun > ./rerun.changed.log 2>&1

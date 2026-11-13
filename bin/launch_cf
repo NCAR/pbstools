@@ -73,8 +73,14 @@ Run it from the directory that job was submitted from, where its PBS output
 files are.  It writes those steps to a new command file,
 ./<command file>.<JOBID>.rerun, and submits that with the other options
 given, which are not taken from the earlier job.  Each rerun step keeps
-its original \${step}.  If the earlier job's output does not record its
-command file, give that command file as well.
+its original \${step}, and its log is named for its original step number.
+If the earlier job's output does not record its command file, give that
+command file as well.
+
+PBS does not allow "-r n" for a job array, so launch_cf jobs of more than
+one node are rerunnable.  Even so, a job that is preempted or exceeds its
+walltime may not be put back in the queue (on Derecho, a preempted job is
+deleted); --rerun is the way to run the steps it did not finish.
 
 All options in "<>" brackets are optional.  Any unrecognized arguments
 are passed through directly to qsub.
@@ -371,19 +377,6 @@ make_rerun_cmdfile ()
     [ -n "${seq}" ] || { echo "ERROR: --rerun expects a job ID, e.g. 1234567 or 1234567[].casper-pbs, not \"${rerun_job}\""; exit 1; }
     [[ "${rerun_job}" == *.* ]] && server="${rerun_job#*.}"
 
-    # the job's PBS output files: <job name>.o<seq>, or <job name>.o<seq>.<index>
-    # for each element of a job array.
-    shopt -s nullglob
-    outputs=( *.o${seq} *.o${seq}.[0-9]* )
-    shopt -u nullglob
-    if [ ${#outputs[@]} -eq 0 ]; then
-        echo "ERROR: no PBS output files of job ${seq} (*.o${seq}*) in $(pwd)"
-        echo "       Run launch_cf --rerun from the directory the job was submitted from."
-        exit 1
-    fi
-    names=$(printf '%s\n' "${outputs[@]}" | sed -E 's/\.o[0-9]+(\.[0-9]+)?$//' | sort -u)
-    [ $(echo "${names}" | wc -l) -eq 1 ] || { echo "ERROR: $(pwd) has output files of more than one job numbered ${seq}: $(echo ${names})"; exit 1; }
-
     # the per-step logs, named for the job id, e.g. stdout-1234567.casper-pbs
     for d in "stdout-${seq}${server:+.${server}}" stdout-${seq} stdout-${seq}.*; do
         [ -d "${d}" ] && { logdir="${d}"; break; }
@@ -391,17 +384,37 @@ make_rerun_cmdfile ()
     [ -z "${server}" -a -n "${logdir}" ] && [[ "${logdir}" == *.* ]] && server="${logdir#*.}"
 
     # a job still queued or running has steps yet to run.  Go by the state
-    # qstat reports for the job, not by its exit status: a finished job is
-    # reported with none (or as F or X), and so is one PBS does not know.
+    # "qstat -fx" reports for the job, not by its exit status: F for a finished
+    # job, and none for a job PBS does not know.  Ask before looking for its
+    # output, which a job does not have until a subjob has finished.  Not
+    # knowing whether it is an array, try both forms of its id.
     if command -v qstat >/dev/null 2>&1; then
-        if [[ "${outputs[0]}" =~ \.o[0-9]+\.[0-9]+$ ]]; then qid="${seq}[]"; else qid="${seq}"; fi
-        qid="${qid}${server:+.${server}}"
-        state=$(qstat -f "${qid}" 2>/dev/null | awk -F' = ' '$1 ~ /^[[:space:]]*job_state$/ { print $2; exit }')
+        for qid in "${seq}[]${server:+.${server}}" "${seq}${server:+.${server}}"; do
+            state=$(qstat -fx "${qid}" 2>/dev/null | awk -F' = ' '$1 ~ /^[[:space:]]*job_state$/ { print $2; exit }')
+            [ -n "${state}" ] && break
+        done
         case "${state}" in
-            ""|"F"|"X") ;;
+            "F"|"X") ;;
+            "")
+                echo "NOTE: qstat does not know job ${seq}, so it is taken to have finished.  qstat can take"
+                echo "      a minute or so to list a job just submitted: if this one was, wait for it to finish."
+                echo ;;
             *) echo "ERROR: job ${qid} is still queued or running (state ${state}); rerun its steps once it has finished"; exit 1 ;;
         esac
     fi
+
+    # the job's PBS output files: <job name>.o<seq>, or <job name>.o<seq>.<index>
+    # for each element of a job array.
+    shopt -s nullglob
+    outputs=( *.o${seq} *.o${seq}.[0-9]* )
+    shopt -u nullglob
+    if [ ${#outputs[@]} -eq 0 ]; then
+        echo "ERROR: no PBS output files of job ${seq} (*.o${seq}*) in $(pwd)"
+        echo "       Run launch_cf --rerun from the directory the job was submitted from, once it has finished."
+        exit 1
+    fi
+    names=$(printf '%s\n' "${outputs[@]}" | sed -E 's/\.o[0-9]+(\.[0-9]+)?$//' | sort -u)
+    [ $(echo "${names}" | wc -l) -eq 1 ] || { echo "ERROR: $(pwd) has output files of more than one job numbered ${seq}: $(echo ${names})"; exit 1; }
 
     # A step succeeded only if its subjob reported it finishing with exit
     # status 0.  Prints the job's total steps, steps/node and command file,
@@ -420,6 +433,8 @@ make_rerun_cmdfile ()
         match($0, / finished  step [0-9]+: exit status [0-9]+/) {
             split(substr($0, RSTART + 16, RLENGTH - 16), t, ": exit status ")
             status[t[1] + 0] = t[2] + 0
+            # a step of a rerun names its log, which is named for its original step
+            if (match($0, /, output in [^ ]+$/)) steplog[t[1] + 0] = substr($0, RSTART + 12)
         }
         /^Done: PBS_ARRAY_INDEX=/ && idx != "" { done[idx] = 1 }
         END {
@@ -430,7 +445,7 @@ make_rerun_cmdfile ()
                 if ((i in status) && status[i] == 0) continue
                 sub_idx = int((i - 1) / spn)
                 if (i in status)
-                    reason = sprintf("exited with status %d%s", status[i], (logdir == "" ? "" : sprintf(", see %s/step-%05d.out", logdir, i)))
+                    reason = sprintf("exited with status %d%s", status[i], (logdir == "" ? "" : sprintf(", see %s/%s", logdir, ((i in steplog) ? steplog[i] : sprintf("step-%05d.out", i)))))
                 else if ((i in launched) && !(sub_idx in done))
                     reason = "cut short: subjob " sub_idx " stopped while it ran"
                 else if (i in launched)

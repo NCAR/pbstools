@@ -59,7 +59,7 @@ summarize ()
             n++
             if (++running > maxrun) maxrun = running
         }
-        / finished  step [0-9]+: exit status / { running--; if ($NF == 0) ok++ }
+        / finished  step [0-9]+: exit status / { running--; if ($0 ~ /: exit status 0($|,)/) ok++ }
         END { printf "%d %d %d %d\n", n, ok, maxrun, early }' "${1}"
 }
 
