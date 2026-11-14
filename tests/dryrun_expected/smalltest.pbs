@@ -17,6 +17,7 @@
 #   command file    : <submission dir>/smalltest
 #   total steps     : 63
 #   steps / node    : 63
+#   steps at once   : 63 per node, in 1 wave(s)
 #   threads / step  : 1
 #   cpus / node     : 128
 #   array indices   : none (single step; PBS does not allow a 1-entry job array)
@@ -35,6 +36,13 @@
 command_file="${command_file:-<submission dir>/smalltest}"
 n_total_steps="${n_total_steps:-63}"
 max_start_delay="${max_start_delay:-0}"
+# "yes" to start each wave of steps only once every step of the wave before
+# it has finished (--sync-waves); "no" to start each step as soon as a slot
+# is free.
+sync_waves="${sync_waves:-no}"
+# the steps each array element runs.  The job array was sized for it, so it
+# cannot be overridden.
+steps_per_node=63
 #----------------------------------------------------------------------------
 
 #------------------------------------------------------------------
@@ -90,8 +98,8 @@ tstart=$(date +%s)
 command_file="${command_file:-./cmdfile}"
 [ -r ${command_file} ] || { echo "Cannot locate requested command file: ${command_file}"; exit 1; }
 
-## determine the number of nodes, and processors per node we were assigned
-## (inferred from the ${PBS_NODEFILE})
+## determine the number of nodes, and the number of steps to run at once on
+## each, from the mpiprocs we were assigned (inferred from the ${PBS_NODEFILE})
 nodeslist=( $(cat ${PBS_NODEFILE} | sort | uniq | cut -d'.' -f1) )
 nnodes=$(cat ${PBS_NODEFILE} | sort | uniq | wc -l)
 nranks=$(cat ${PBS_NODEFILE} | sort | wc -l)
@@ -99,7 +107,24 @@ nranks_per_node=$((${nranks} / ${nnodes}))
 
 [ ${nnodes} -eq 1 ] || { echo "ERROR: this example is intended to be run on 1 node, but with perhaps many array steps"; exit 1; }
 
-echo "(#steps/node) x (#threads/step) = ${nranks_per_node} x ${OMP_NUM_THREADS}"
+# the steps this node runs, set by launch_cf.  If unset, this node runs as
+# many steps as it runs at once.
+steps_per_node=${steps_per_node:-${nranks_per_node}}
+steps_at_once=${nranks_per_node}
+[ ${steps_at_once} -gt ${steps_per_node} ] && steps_at_once=${steps_per_node}
+waves_per_node=$(( (${steps_per_node} + ${steps_at_once} - 1) / ${steps_at_once} ))
+
+# sync_waves, optional, from environment: "yes" to start each wave of steps
+# only once every step of the wave before it has finished.
+sync_waves="${sync_waves:-no}"
+case "${sync_waves}" in
+    "yes"|"no") ;;
+    *) echo "ERROR: sync_waves must be \"yes\" or \"no\", not \"${sync_waves}\""; exit 1 ;;
+esac
+
+echo "(#steps/node) x (#threads/step) = ${steps_per_node} x ${OMP_NUM_THREADS}"
+echo "(#steps at once) = ${steps_at_once}, in ${waves_per_node} wave(s)"
+[ "${sync_waves}" = "yes" ] && echo "waves: synchronized, each starts once every step of the one before it has finished"
 
 if [ -z "${n_total_steps}" ]; then
     echo "Failed to get \${n_total_steps} from environment!"
@@ -120,11 +145,12 @@ if [ -z "${max_start_delay}" ]; then
     max_start_delay=0
 fi
 
-# this PBS_ARRAY_INDEX will compute multiple "steps" from ${command_file}, up to ppn
-start_idx=$(( ${PBS_ARRAY_INDEX} * ${nranks_per_node} ))
-stop_idx=$(( ${start_idx} + ${nranks_per_node} - 1 ))
+# this PBS_ARRAY_INDEX will compute multiple "steps" from ${command_file}, up to steps_per_node
+start_idx=$(( ${PBS_ARRAY_INDEX} * ${steps_per_node} ))
+stop_idx=$(( ${start_idx} + ${steps_per_node} - 1 ))
 
 echo "n_total_steps: ${n_total_steps}, PBS_ARRAY_INDEX=${PBS_ARRAY_INDEX}"
+echo "command_file: $(readlink -f ${command_file})"
 echo "start_idx=${start_idx} stop_idx=${stop_idx} "
 [ ${max_start_delay} -ne 0 ] && echo "max_start_delay=${max_start_delay}"
 
@@ -142,13 +168,42 @@ fi
 logs_dir=stdout-${PBS_ARRAY_ID/"[]"/}
 mkdir -p ./${logs_dir}
 
+# how to wait for any one running step to finish ("wait -n" needs bash 4.3)
+if [ ${BASH_VERSINFO[0]} -gt 4 ] || [ ${BASH_VERSINFO[0]} -eq 4 -a ${BASH_VERSINFO[1]} -ge 3 ]; then
+    wait_for_a_step="wait -n"
+else
+    wait_for_a_step="sleep 1"
+fi
+
+# the waves this node runs: the last array element may have fewer steps, and so fewer waves
+my_steps=$(( (${stop_idx} < ${n_total_steps} ? ${stop_idx} + 1 : ${n_total_steps}) - ${start_idx} ))
+my_waves=$(( (${my_steps} + ${steps_at_once} - 1) / ${steps_at_once} ))
+
 # loop over each 'step' for which we are responsible.
-# launch our ${command_file} lines, in the background
+# launch our ${command_file} lines, in the background, up to ${steps_at_once}
+# at a time: once that many are running, start the next as soon as one finishes,
+# or, with sync_waves, once all of them have finished.
 for step in $(seq ${start_idx} ${stop_idx}); do
 
     # the last PBS_ARRAY_INDEX could go past n_total_steps if the number of ${command_file}
-    # is not evenly divisible by ppn - don't let it
+    # is not evenly divisible by steps_per_node - don't let it
     [ ${step} -ge ${n_total_steps} ] && break
+
+    if [ "${sync_waves}" = "yes" ]; then
+        # the first step of a wave waits for every step of the wave before it
+        if [ $(( (${step} - ${start_idx}) % ${steps_at_once} )) -eq 0 ]; then
+            wait
+            printf "%s starting  wave %d of %d\n"  "[$(date +%Y-%m-%d" "%T" "%Z)]" \
+                $(( (${step} - ${start_idx}) / ${steps_at_once} + 1 )) ${my_waves}
+        fi
+    else
+        # wait for a free slot
+        running=( $(jobs -rp) )
+        while [ ${#running[@]} -ge ${steps_at_once} ]; do
+            ${wait_for_a_step}
+            running=( $(jobs -rp) )
+        done
+    fi
 
     # get the command line arguments from ${command_file} for this step.
     # handles # comment lines in step too...)
@@ -158,9 +213,24 @@ for step in $(seq ${start_idx} ${stop_idx}); do
 
     printf "%s launching step %05d: %s\n"  "[$(date +%Y-%m-%d" "%T" "%Z)]" $((${step}+1)) "${step_cmd}"
 
+    # the step's log is named for its step number, or, for a step of a launch_cf --rerun command
+    # file, which begins "step=N; ", for its step number in the original job.
+    # (Its "finished" line then names the log.)
+    step_log=step-$(printf '%05d' $((${step}+1)) ).out
+    unset step_log_note
+    if [[ "${step_cmd}" =~ ^step=([0-9]+)\;\  ]]; then
+        step_log=step-$(printf '%05d' $((10#${BASH_REMATCH[1]}+1)) ).out
+        step_log_note=", output in ${step_log}"
+    fi
+
     # finally, launch our desired application with the requested arguments.  Redirect stdout/stderr to
-    # the logs directory.
-    eval "$step_cmd" > ./${logs_dir}/step-$(printf '%05d' $((${step}+1)) ).out 2>&1 &
+    # the logs directory, and report when it finishes.  (The step runs in a subshell of its own, so
+    # that it is reported even if it ends with "exit".)
+    (
+        ( eval "$step_cmd" ) > ./${logs_dir}/${step_log} 2>&1
+        step_status=$?
+        printf "%s finished  step %05d: exit status %d%s\n"  "[$(date +%Y-%m-%d" "%T" "%Z)]" $((${step}+1)) ${step_status} "${step_log_note}"
+    ) &
 done
 
 # wait for all the background processes to complete.
