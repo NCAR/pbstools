@@ -394,7 +394,7 @@ parse_args ()
 # command file to submit.
 make_rerun_cmdfile ()
 {
-    local seq server outputs names logdir d qid state listing N spn original raw t i n_failed
+    local seq server outputs names logdir d qid info state workdir listing N spn original raw t i n_failed
     local kept_step='^step=[0-9]+; '
     local reasons=()
 
@@ -415,9 +415,13 @@ make_rerun_cmdfile ()
     # knowing whether it is an array, try both forms of its id.
     if command -v qstat >/dev/null 2>&1; then
         for qid in "${seq}[]${server:+.${server}}" "${seq}${server:+.${server}}"; do
-            state=$(qstat -fx "${qid}" 2>/dev/null | awk -F' = ' '$1 ~ /^[[:space:]]*job_state$/ { print $2; exit }')
+            # qstat wraps long values onto continuation lines beginning with a tab
+            info=$(qstat -fx "${qid}" 2>/dev/null | awk '{ printf "%s", (sub(/^\t/, "") ? $0 : "\n" $0) } END { print "" }')
+            state=$(awk -F' = ' '$1 ~ /^[[:space:]]*job_state$/ { print $2; exit }' <<< "${info}")
             [ -n "${state}" ] && break
         done
+        # the directory the job was submitted from, to point to if need be
+        workdir=$(grep -o 'PBS_O_WORKDIR=[^,]*' <<< "${info}" | head -1 | cut -d= -f2-)
         case "${state}" in
             "F"|"X") ;;
             "")
@@ -435,7 +439,12 @@ make_rerun_cmdfile ()
     shopt -u nullglob
     if [ ${#outputs[@]} -eq 0 ]; then
         echo "ERROR: no PBS output files of job ${seq} (*.o${seq}*) in $(pwd)"
-        echo "       Run launch_cf --rerun from the directory the job was submitted from, once it has finished."
+        if [ -n "${workdir}" -a "$(readlink -f "${workdir}" 2>/dev/null)" != "$(pwd -P)" ]; then
+            echo "       Job ${seq} was submitted from ${workdir}:"
+            echo "       run launch_cf --rerun from there, e.g. after \"cd ${workdir}\"."
+        else
+            echo "       Run launch_cf --rerun from the directory the job was submitted from, once it has finished."
+        fi
         exit 1
     fi
     names=$(printf '%s\n' "${outputs[@]}" | sed -E 's/\.o[0-9]+(\.[0-9]+)?$//' | sort -u)

@@ -155,7 +155,7 @@ Each node runs up to CPUs ÷ threads steps at once. A node can be given more ste
 
 **Rerunning the steps that didn't succeed**
 
-`launch_cf --rerun JOBID` finds the steps of an earlier `launch_cf` job that didn't succeed, and submits just those. Run it from the directory that job was submitted from, once it has finished. For example:
+`launch_cf --rerun JOBID` finds the steps of an earlier `launch_cf` job that didn't succeed, and submits just those. Run it from the directory that job was submitted from, once it has finished. Run from anywhere else, it says which directory that is, while PBS still has the job's history. For example:
 
 ```
 $ launch_cf -A PROJECT -l walltime=0:10:00 --rerun 6285048

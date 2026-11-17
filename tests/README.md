@@ -234,8 +234,11 @@ A new dry-run test fails with "no saved copy" until you save it the same way.
 The check passes if `--rerun` picks out exactly steps 7, 9-12 and 18 for the
 right reasons, and if step 10 still sees its original `${step}` when rerun.
 A rerun of the rerun job must then pick out just steps 7 and 18, which fail
-again. It also checks that `--rerun` finds nothing to rerun for a job that
-succeeded, and refuses an unknown job or a command file that has changed.
+again, and `--waves` asking for more waves than those steps fill must run
+them in fewer rather than refuse. It also checks that `--rerun` finds
+nothing to rerun for a job that succeeded, refuses an unknown job or a
+command file that has changed, and, run from the wrong directory, names the
+one the job was submitted from.
 It prints `PASS` or `FAIL` for each check and exits 0 only if all of them
 pass. It takes about 10 seconds, and leaves its files in `./rerun/`.
 

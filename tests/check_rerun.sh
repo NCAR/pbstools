@@ -22,13 +22,19 @@ rm -rf "${workdir}" && mkdir -p "${workdir}" && cd "${workdir}" || exit 1
 
 # a stand-in for qstat, so that the test does not depend on what the system's
 # qstat says about these made-up jobs: every job has finished, except
-# ${fake_running_job}, which is reported running.
+# ${fake_running_job}, which is reported running, and ${fake_finished_job},
+# which is reported finished, submitted from ${fake_workdir}.
 mkdir -p ./bin
 cat > ./bin/qstat <<'EOF'
 #!/bin/bash
 for id; do :; done
 if [ -n "${fake_running_job}" ] && [[ "${id}" == "${fake_running_job}"[.[]* ]]; then
     printf 'Job Id: %s\n    job_state = R\n' "${id}"
+    exit 0
+fi
+if [ -n "${fake_finished_job}" ] && [[ "${id}" == "${fake_finished_job}"[.[]* ]]; then
+    # a long value, wrapped onto a continuation line as qstat does
+    printf 'Job Id: %s\n    job_state = F\n    Variable_List = PBS_O_HOME=/home/test,PBS_O_LANG=C,\n\tPBS_O_WORKDIR=%s,PBS_O_SYSTEM=Linux\n' "${id}" "${fake_workdir}"
     exit 0
 fi
 echo "qstat: Unknown Job Id ${id}" >&2
@@ -160,6 +166,12 @@ ${launch_cf} -A TEST -l walltime=0:10:00 --rerun 9999 --dryrun > ./rerun.9999.lo
 status=$?
 ok=no; [ ${status} -ne 0 ] && grep -q "no PBS output files of job 9999" ./rerun.9999.log && ok=yes
 check "--rerun of an unknown job fails" [ ${ok} = yes ]
+
+mkdir -p ./elsewhere
+(cd ./elsewhere && fake_finished_job=1001 fake_workdir="${workdir}" ${launch_cf} -A TEST -l walltime=0:10:00 --rerun 1001 --dryrun) > ./rerun.elsewhere.log 2>&1
+status=$?
+ok=no; [ ${status} -ne 0 ] && grep -q "Job 1001 was submitted from ${workdir}:" ./rerun.elsewhere.log && ok=yes
+check "--rerun from the wrong directory names the one the job was submitted from" [ ${ok} = yes ]
 
 fake_running_job=1004 ${launch_cf} -A TEST -l walltime=0:10:00 --rerun 1004 --dryrun > ./rerun.running.log 2>&1
 status=$?
