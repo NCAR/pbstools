@@ -136,6 +136,13 @@ check "--rerun 1002 reruns just steps 7 and 18 again" [ "$(rerun_steps ./cmdfile
 check "the rerun names step 7's log for step 7, not its place (1)" [ -f stdout-1002.test/step-00007.out -a ! -f stdout-1002.test/step-00001.out ]
 check "... and --rerun 1002 points at that log" grep -q "^# step 1 of job 1002: exited with status 3, see stdout-1002.test/step-00007.out" ./cmdfile.1002.rerun
 
+# --waves asks for more waves than the 2 steps to rerun fill: that is
+# expected of a rerun, so it runs them in fewer waves rather than refusing.
+${launch_cf} -A TEST -l walltime=0:10:00 --ppn 2 --waves 3 --rerun 1002 --dryrun --script ./job1006.pbs > ./rerun.waves.log 2>&1
+status=$?
+check "--rerun with more --waves than the steps fill runs them in fewer" \
+    [ ${status} -eq 0 -a -n "$(grep 'fill only 1 wave, so they run in that many' ./rerun.waves.log)" ]
+
 #------------------------------------------------------------------
 # a job whose steps all succeeded, and other cases --rerun refuses
 echo

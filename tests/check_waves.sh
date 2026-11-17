@@ -12,6 +12,8 @@
 #     the second wave starts while most of the first still runs;
 #   * with --sync-waves, each wave starts only once every step of the wave
 #     before it has finished.
+# It also checks that --waves N gives each node N waves of steps, and that
+# launch_cf refuses more waves than the steps fill.
 #
 # Exit status: 0 = all checks passed, 1 = at least one failed
 #----------------------------------------------------------------------------
@@ -108,6 +110,44 @@ echo "running job 1002 again, with sync_waves=no ..."
 sync_waves=no run_job ./job1002.pbs 1003
 read -r n ok maxrun early <<< "$(summarize ./launch_cf.o1003 4)"
 check "sync_waves=no overrides --sync-waves" [ "${n} ${ok}" = "12 12" -a ${early} -gt 0 ]
+
+#------------------------------------------------------------------
+# --waves N: N times as many steps per node as it runs at once
+echo
+echo "running job 1004 (the same 12 steps, with --ppn 4 --waves 3) ..."
+${launch_cf} -A TEST -l walltime=0:10:00 --ppn 4 --waves 3 --dryrun --script ./job1004.pbs ./cmdfile > ./launch_cf.1004.log 2>&1
+check "--waves 3: 3 x 4 = 12 steps per node, on one node" \
+    [ -n "$(grep '^steps_per_node=12$' ./job1004.pbs)" -a -z "$(grep '^#PBS -J' ./job1004.pbs)" ]
+check "--waves 3: launch_cf reports it" grep -q "so it is given 3 x 4 = 12 steps, in 3 waves" ./launch_cf.1004.log
+run_job ./job1004.pbs 1004
+read -r n ok maxrun early <<< "$(summarize ./launch_cf.o1004 4)"
+check "--waves 3: all 12 steps ran and succeeded, at most 4 at once" [ "${n} ${ok}" = "12 12" -a ${maxrun} -le 4 ]
+
+${launch_cf} -A TEST -l walltime=0:10:00 --ppn 2 --waves 2 --dryrun --script ./job1005.pbs ./cmdfile > ./launch_cf.1005.log 2>&1
+check "--ppn 2 --waves 2: 4 steps per node, on 3 nodes" \
+    [ -n "$(grep '^steps_per_node=4$' ./job1005.pbs)" -a -n "$(grep '^#PBS -J 0-2$' ./job1005.pbs)" ]
+
+# --waves with more waves than the steps fill, or with --nodes, is an error
+expect_error ()
+{
+    local label="${1}" message="${2}" status; shift 2
+    "${launch_cf}" -A TEST -l walltime=0:10:00 --dryrun --script ./error.pbs "${@}" > ./error.log 2>&1
+    status=${?}
+    check "${label}" [ ${status} -ne 0 -a -n "$(grep -F -- "${message}" ./error.log)" -a ! -f ./error.pbs ]
+}
+expect_error "--ppn 4 --waves 4: the 12 steps fill only 3 waves" \
+    "fill only 3 waves.  4 waves need more than 12 steps." --ppn 4 --waves 4 ./cmdfile
+expect_error "--waves 2 with 12 steps, 128 at once: they fill only 1 wave" \
+    "Give --waves 1, or run fewer steps at once" --waves 2 ./cmdfile
+expect_error "--waves with --nodes is refused" \
+    "give only one of --steps-per-node, --nodes and --waves" --waves 2 --nodes 2 ./cmdfile
+expect_error "--waves with --steps-per-node is refused" \
+    "give only one of --steps-per-node, --nodes and --waves" --waves 2 --steps-per-node 4 ./cmdfile
+expect_error "--waves 0 is refused" "--waves must be a positive whole number" --waves 0 ./cmdfile
+
+NCAR_HOST=casper ${launch_cf} -A TEST -l walltime=0:10:00 --waves 3 --dryrun --script ./job1006.pbs ./cmdfile > ./launch_cf.1006.log 2>&1
+check "--waves on Casper's default of 1 CPU: launch_cf points out --ppn" \
+    grep -q "one step at a time, on casper's default of 1 CPU per node: give --ppn" ./launch_cf.1006.log
 
 echo
 if [ ${nfail} -gt 0 ]; then

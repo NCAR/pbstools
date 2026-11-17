@@ -60,6 +60,7 @@ all args|all_args_test|omp_cmdfile|16|8
 waves|launch_cf|waves_cmdfile|200|1|128
 nodes|launch_cf|waves_cmdfile|150|4|32
 sync waves|sync_waves_test|waves_cmdfile|150|4|32|sync
+waves option|waves_option_test|waves_cmdfile|96|4|32
 EOF
             ;;
         "casper")
@@ -71,6 +72,7 @@ casper -> derecho|casper2derecho_openmp_test|omp_cmdfile|32|4
 waves|launch_cf|waves_cmdfile|40|1|8
 nodes|launch_cf|waves_cmdfile|100|1|36
 sync waves|sync_waves_test|waves_cmdfile|40|1|8|sync
+waves option|waves_option_test|waves_cmdfile|24|1|8
 EOF
             ;;
     esac

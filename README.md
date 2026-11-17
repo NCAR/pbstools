@@ -108,6 +108,7 @@ launch_cf -A PROJECT -l walltime=1:00:00                     # runs ./cmdfile
 launch_cf -A PROJECT -l walltime=1:00:00 ./my_cmdfile
 launch_cf -A PROJECT -l walltime=1:00:00 --nthreads 4 --steps-per-node 32 ./omp_cmdfile
 launch_cf -A PROJECT -l walltime=4:00:00 --nodes 4 ./my_cmdfile    # spread the steps over 4 nodes
+launch_cf -A PROJECT -l walltime=3:00:00 --waves 3 ./my_cmdfile    # 3 waves per node: 3 x 128 steps on Derecho
 launch_cf -A PROJECT -l walltime=1:00:00 --dryrun ./my_cmdfile   # write the job script, don't submit it
 launch_cf -A PROJECT -l walltime=1:00:00 --rerun 1234567          # resubmit the steps of job 1234567 that didn't succeed
 ```
@@ -128,6 +129,7 @@ launch_cf -A PROJECT -l walltime=1:00:00 --rerun 1234567          # resubmit the
 | `--ppn`, `--processors-per-node N` | CPUs per node (Casper: at most 36) | 128 | 1 |
 | `--steps-per-node N` | steps each node runs; any beyond CPUs ÷ threads run in waves | CPUs ÷ threads | CPUs ÷ threads |
 | `--nodes N` | spread the steps evenly over N nodes, instead of giving `--steps-per-node` | | |
+| `--waves N` | give each node N waves of steps, N × CPUs ÷ threads, instead of giving `--steps-per-node` or `--nodes`; see below | | |
 | `--sync-waves` | start each wave of steps only once the wave before it has finished; see below | | |
 | `--nthreads`, `--threads-per-step N` | OpenMP threads per step | 1 | 1 |
 | `--mem`, `--memory SIZE` | memory per node | `235G` | `10G` |
@@ -142,6 +144,9 @@ launch_cf -A PROJECT -l walltime=1:00:00 --rerun 1234567          # resubmit the
 **Steps per node and waves**
 
 Each node runs up to CPUs ÷ threads steps at once. A node can be given more steps than that, with `--steps-per-node` or `--nodes`. It then starts its next step each time a running one finishes, so its steps run in *waves*. For example, 1200 steps on Derecho with `--nodes 4` give each node 300 steps, which run 128 at a time in 3 waves.
+
+* **`--waves N` sets the steps per node from the number of waves.** Each node is given N times as many steps as it runs at once, so you don't have to work out `--steps-per-node` yourself. On Derecho, `--waves 3` gives each node 3 × 128 = 384 steps, and `--nthreads 4 --waves 3` gives it 3 × 32 = 96. The CPUs come from `--ppn` or the system default; on Casper that is one CPU, so give `--ppn` too, e.g. `--ppn 36 --waves 3`. `launch_cf` reports the steps per node this gives, and that the last node may have fewer steps left over, in fewer waves.
+* **`--waves` needs enough steps to fill that many waves**: 2 waves of 128 at once need more than 128 steps, 3 waves more than 256, and so on. Otherwise `launch_cf` stops and says how many waves the steps fill. A `--rerun` with `--waves` is the exception: it runs its steps in as many waves as they need, however few.
 
 * **Allow walltime for every wave.** `launch_cf` can't know how long the steps take, but it reports how many waves each node runs. Request enough walltime for that many steps in a row.
 * **Unless you give `--ppn`, each node gets enough CPUs to run all of its steps at once**, up to a full node. This matters on Casper, where the default is one CPU. With `--ppn`, each node runs only as many steps at once as fit in those CPUs.
@@ -162,7 +167,7 @@ Wrote ./cmdfile.6285048.rerun, to submit as the command file.
 
 * **A step succeeded only if its array element reported it finishing with exit status 0.** So it catches steps that exited with an error, and steps of an array element that was cut short (walltime, memory, preemption). It also catches steps of an element that never ran at all, e.g. because PBS rejected it on its node.
 * **The steps are written to a new command file**, `./<command file>.<JOBID>.rerun`, with a comment saying why each is rerun, then submitted like any other. Use `--dryrun` to see the list without submitting it.
-* **The other options aren't taken from the earlier job.** Give `-A`, `-l walltime=` and any others again, and choose `--steps-per-node` or `--nodes` for the smaller number of steps.
+* **The other options aren't taken from the earlier job.** Give `-A`, `-l walltime=` and any others again, and choose `--steps-per-node`, `--nodes` or `--waves` for the smaller number of steps.
 * **Each step keeps its `${step}`** from the original job, so steps that use it, e.g. to name their output, write the same files. Its log is named for its original step too: in the rerun job's `stdout-<job id>/`, step 17 of the original job writes `step-00017.out`, wherever it is in the rerun file. `--rerun` of a rerun job works the same way.
 * **`-r n` can't be used to stop PBS rerunning a job array**: `qsub` rejects a non-rerunnable array. Whether a preempted job goes back in the queue depends on the system, not on `-r`: Derecho's `preempt` queue deletes it. Either way, `--rerun` submits the steps it didn't finish.
 * **Jobs run with an older `launch_cf`** don't record their command file, so give it as well: `launch_cf ... --rerun JOBID ./cmdfile`. Jobs from before steps reported their exit status can't be rerun this way.
