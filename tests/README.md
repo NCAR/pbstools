@@ -161,7 +161,7 @@ Result: NOT FINISHED (5 passed, 1 preempted, 0 not finished)
 | `PASS` | every array element finished, every step ran exactly once, exited with status 0 and left a log, no node ran more steps at once than it should, and no output shows an error |
 | `FAIL` | something went wrong; the lines below it say what |
 | `WAIT` | no output yet from the test, or from some of its array elements; they are probably still queued or running |
-| `PREEMPTED` | array elements stopped part way without an error, most likely because the scheduler preempted them; rerun the test |
+| `PREEMPTED` | array elements stopped part way without an error, most likely because the scheduler preempted them, and no `launch_cf --rerun` job has yet run the steps they didn't finish; rerun those steps, or the test |
 
 A test **fails** if, for example:
 
@@ -183,6 +183,22 @@ scheduler terminated the stopped elements. If PBS confirms it, the line says so.
 If PBS gives another reason, the test is a `FAIL`. If PBS no longer has the job,
 the line says "most likely preempted" and gives the `qstat -xf` command to
 confirm it.
+
+It also prints the `launch_cf --rerun` command that runs just the steps the
+job didn't finish, with the options the test was submitted with, after the
+`cd` into the results directory that `--rerun` must be run from. It takes
+those options from the job script `launch_cf` generated for the test, so it
+needs that script to still be in the results directory.
+
+Once that rerun job has finished, `./check_results.sh` counts its steps
+towards the test. It finds the rerun job by its command file,
+`<command file>.<JOBID>.rerun`, and each rerun step by the log it names,
+which is named for its original step. If the rerun jobs ran every step the
+test's job didn't finish to exit status 0, the test is a `PASS`, with a line
+naming them. If not, it stays `PREEMPTED`, says how many steps are still to
+run, and gives the `--rerun` command for the newest rerun job. A rerun of a
+rerun counts too. The original job's output files and step logs are left as
+they are, so there is no need to copy anything back into them.
 
 The overall result and exit status are:
 
