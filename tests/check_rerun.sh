@@ -23,11 +23,17 @@ rm -rf "${workdir}" && mkdir -p "${workdir}" && cd "${workdir}" || exit 1
 # a stand-in for qstat, so that the test does not depend on what the system's
 # qstat says about these made-up jobs: every job has finished, except
 # ${fake_running_job}, which is reported running, and ${fake_finished_job},
-# which is reported finished, submitted from ${fake_workdir}.
+# which is reported finished, submitted from ${fake_workdir}.  With
+# ${fake_qstat_down} set, qstat cannot reach the server.
 mkdir -p ./bin
 cat > ./bin/qstat <<'EOF'
 #!/bin/bash
 for id; do :; done
+if [ -n "${fake_qstat_down}" ]; then
+    echo "Connection refused" >&2
+    echo "qstat: cannot connect to server test-pbs (errno=15010)" >&2
+    exit 2
+fi
 if [ -n "${fake_running_job}" ] && [[ "${id}" == "${fake_running_job}"[.[]* ]]; then
     printf 'Job Id: %s\n    job_state = R\n' "${id}"
     exit 0
@@ -188,6 +194,33 @@ ${launch_cf} -A TEST -l walltime=0:10:00 --rerun 1004 --dryrun > ./rerun.changed
 status=$?
 ok=no; [ ${status} -ne 0 ] && grep -q "no longer has the 3 steps" ./rerun.changed.log && ok=yes
 check "--rerun refuses a command file that has changed" [ ${ok} = yes ]
+
+fake_qstat_down=yes ${launch_cf} -A TEST -l walltime=0:10:00 --rerun 1001 --dryrun --script ./job1001b.pbs > ./rerun.qstat_down.log 2>&1
+status=$?
+ok=no; [ ${status} -ne 0 ] && grep -q "cannot tell whether job 1001 has finished" ./rerun.qstat_down.log && ok=yes
+check "--rerun refuses a job when qstat cannot reach the server" [ ${ok} = yes ]
+
+#------------------------------------------------------------------
+# a command file whose lines are not all steps one for one: a step continued
+# onto a second line with "\", which the job reads as one step, and a blank
+# line ending in a carriage return, which the job reads as a step (that fails).
+# --rerun has to count steps as the job does, or it copies the wrong lines.
+echo
+echo "running job 2001 (a step continued onto a second line, and a CRLF blank line) ..."
+printf '%s\n' 'echo a' 'false \' '  x' 'echo c' $'\r' 'exit 5' > ./odd_cmdfile
+${launch_cf} -A TEST -l walltime=0:10:00 --ppn 8 --dryrun --script ./job2001.pbs ./odd_cmdfile > ./launch_cf.2001.log 2>&1
+check "odd_cmdfile has 5 steps" grep -q "Found n_total_steps=5 in" ./launch_cf.2001.log
+run_subjob ./job2001.pbs 2001 0
+mv launch_cf.o2001.0 launch_cf.o2001        # a single job, not an array
+${launch_cf} -A TEST -l walltime=0:10:00 --rerun 2001 --dryrun --script ./job2002.pbs > ./rerun.2001.log 2>&1
+status=$?
+check "--rerun 2001 succeeds" [ ${status} -eq 0 ]
+expected="step=1; false \\
+  x
+step=3; "$'\r'"
+step=4; exit 5"
+check "it reruns steps 2, 4 and 5, all of each" [ "$(rerun_steps ./odd_cmdfile.2001.rerun 2>/dev/null)" = "${expected}" ]
+check "the rerun job finds those 3 steps" grep -q "Found n_total_steps=3 in" ./rerun.2001.log
 
 echo
 if [ ${nfail} -gt 0 ]; then

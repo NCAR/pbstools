@@ -69,6 +69,12 @@ step each time a running one finishes, so its steps run in "waves".
 Allow walltime for that many steps in a row: launch_cf reports how many
 waves each node will run, but cannot know how long the steps take.
 
+Without --ppn, launch_cf requests enough CPUs to run all of a node's steps
+at once, up to a full node.  With --ppn, it requests just that many, and
+the steps that do not fit run in waves.  (Before launch_cf ran steps in
+waves, a larger --steps-per-node raised --ppn to fit them all at once; to
+get that now, leave out --ppn or give a larger one.)
+
 --waves N, in place of --steps-per-node or --nodes, gives each node N
 waves of steps: N times as many steps as it runs at once, i.e.
 --steps-per-node N x (#CPUS / #Threads/step), with #CPUS from --ppn or the
@@ -394,7 +400,7 @@ parse_args ()
 # command file to submit.
 make_rerun_cmdfile ()
 {
-    local seq server outputs names logdir d qid info state workdir listing N spn original raw t i n_failed
+    local seq server outputs names logdir d qid qout info state workdir listing N spn original raw chunk line t i n_failed
     local kept_step='^step=[0-9]+; '
     local reasons=()
 
@@ -412,11 +418,14 @@ make_rerun_cmdfile ()
     # "qstat -fx" reports for the job, not by its exit status: F for a finished
     # job, and none for a job PBS does not know.  Ask before looking for its
     # output, which a job does not have until a subjob has finished.  Not
-    # knowing whether it is an array, try both forms of its id.
+    # knowing whether it is an array, try both forms of its id.  A job qstat
+    # says it does not know is taken to have finished, but not one qstat could
+    # not be asked about, e.g. with its server down: it may still be running.
     if command -v qstat >/dev/null 2>&1; then
         for qid in "${seq}[]${server:+.${server}}" "${seq}${server:+.${server}}"; do
+            qout=$(qstat -fx "${qid}" 2>&1)
             # qstat wraps long values onto continuation lines beginning with a tab
-            info=$(qstat -fx "${qid}" 2>/dev/null | awk '{ printf "%s", (sub(/^\t/, "") ? $0 : "\n" $0) } END { print "" }')
+            info=$(awk '{ printf "%s", (sub(/^\t/, "") ? $0 : "\n" $0) } END { print "" }' <<< "${qout}")
             state=$(awk -F' = ' '$1 ~ /^[[:space:]]*job_state$/ { print $2; exit }' <<< "${info}")
             [ -n "${state}" ] && break
         done
@@ -425,6 +434,12 @@ make_rerun_cmdfile ()
         case "${state}" in
             "F"|"X") ;;
             "")
+                if ! grep -q 'Unknown Job Id' <<< "${qout}"; then
+                    echo "ERROR: cannot tell whether job ${seq} has finished: \"qstat -fx ${qid}\" failed:"
+                    sed -n '/./{s/^/         /;p;}' <<< "${qout}" | head -5
+                    echo "       Try again once qstat can reach the job's PBS server."
+                    exit 1
+                fi
                 echo "NOTE: qstat does not know job ${seq}, so it is taken to have finished.  qstat can take"
                 echo "      a minute or so to list a job just submitted: if this one was, wait for it to finish."
                 echo ;;
@@ -531,24 +546,36 @@ make_rerun_cmdfile ()
     done < <(tail -n +2 <<< "${listing}")
 
     # copy those steps from the command file, counting steps exactly as
-    # count_non_comment_non_empty_lines does.  Each keeps its original ${step},
-    # which a step of an earlier rerun already sets.
+    # count_non_comment_non_empty_lines and the job do: with a plain "read",
+    # which joins a line ending in "\" to the next, and the same test for
+    # comment and empty lines.  Each step is copied as it is in the file, all
+    # of its lines, so that the rerun job reads the same command.  Each keeps
+    # its original ${step}, which a step of an earlier rerun already sets.
     rerun_file="./$(basename "${original}" | sed -E 's/\.[0-9]+\.rerun$//').${seq}.rerun"
     {
         echo "# the ${n_failed} steps of job ${rerun_job} that did not succeed, out of ${N} in"
         echo "# ${original}"
         echo "# written by: ${launch_cf_cmdline}"
         i=0
+        chunk=""
         while IFS= read -r raw; do
-            t="${raw#"${raw%%[![:space:]]*}"}"
-            [[ ${t:0:1} == "#" || -z "${t}" ]] && continue
+            chunk+="${raw}"
+            # an odd number of "\" at the end of the line: "read" goes on to the next
+            t="${raw##*[!\\]}"
+            if [ $(( ${#t} % 2 )) -eq 1 ]; then
+                chunk+=$'\n'
+                continue
+            fi
+            read line <<< "${chunk}"        # the line as the job reads it
+            t="${chunk}"; chunk=""
+            [[ ${line:0:1} == "#" || -z "${line// }" ]] && continue
             i=$((i + 1))
             [ -n "${reasons[${i}]}" ] || continue
             echo "# step ${i} of job ${seq}: ${reasons[${i}]}"
-            if [[ "${raw}" =~ ${kept_step} ]]; then
-                echo "${raw}"
+            if [[ "${line}" =~ ${kept_step} ]]; then
+                echo "${t}"
             else
-                echo "step=$((i - 1)); ${raw}"
+                echo "step=$((i - 1)); ${t}"
             fi
         done < "${original}"
     } > "${rerun_file}" || { echo "ERROR: cannot write ${rerun_file}"; exit 1; }
@@ -723,6 +750,8 @@ if [ -n "${waves}" ]; then
         echo "      That is one step at a time, on ${execution_host}'s default of $(plural ${ppn} CPU) per node: give --ppn to run more at once."
 elif [ ${waves_per_node} -gt 1 ]; then
     echo "NOTE: each node runs $(plural ${steps_at_once} step) at once, so its ${steps_per_node} steps run in ${waves_per_node} waves."
+    [ -n "${ppn_given}" -a $(( ${steps_per_node} * ${threads_per_step} )) -le ${max_ppn} ] && \
+        echo "      --ppn ${ppn} sets that; give --ppn $(( ${steps_per_node} * ${threads_per_step} )), or leave it out, to run all ${steps_per_node} at once."
 fi
 if [ ${waves_per_node} -gt 1 ]; then
     [ ${njobs} -gt 0 -a ${last_waves} -lt ${waves_per_node} ] && \
