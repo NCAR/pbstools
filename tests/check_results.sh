@@ -8,7 +8,8 @@
 # Run it once the jobs submitted by "make check_<host>" have finished.  Each
 # test is identified by what its job reports in its PBS output file (job name,
 # total steps, steps/node, threads/step).  When a test was run more than once,
-# the most recent job is the one checked.
+# the most recent job is the one checked.  A test whose job was preempted
+# passes once "launch_cf --rerun" jobs have run the steps it did not finish.
 #
 # Exit status: 0 = all tests passed
 #              1 = at least one test failed
@@ -40,8 +41,12 @@ EOF
 #------------------------------------------------------------------
 # the tests in each suite, mirroring the check_derecho & check_casper
 # targets in ./Makefile -- keep the two in sync.
-#   label | PBS job name | command file | steps/node | threads/step
+#   label | PBS job name | command file | steps/node | threads/step | steps at once | sync
 # steps/node "all" means every step fits on one node (a single, non-array job).
+# steps at once, if given and less than steps/node, means each node runs its
+# steps in waves; otherwise each node runs all of its steps at once.
+# sync "sync" means the test runs with --sync-waves, so that each wave starts
+# only once every step of the wave before it has finished.
 expected_tests ()
 {
     case "${1}" in
@@ -53,6 +58,10 @@ openmp|launch_cf|omp_cmdfile|32|4
 openmp hello world|launch_cf|hw_cmdfile|2|32
 derecho -> casper|derecho2casper_openmp_test|omp_cmdfile|8|4
 all args|all_args_test|omp_cmdfile|16|8
+waves|launch_cf|waves_cmdfile|200|1|128
+nodes|launch_cf|waves_cmdfile|150|4|32
+sync waves|sync_waves_test|waves_cmdfile|150|4|32|sync
+waves option|waves_option_test|waves_cmdfile|96|4|32
 EOF
             ;;
         "casper")
@@ -61,6 +70,10 @@ defaults|launch_cf|cmdfile|1|1
 njobs < ppn|launch_cf|smalltest|1|1
 openmp|launch_cf|omp_cmdfile|8|4
 casper -> derecho|casper2derecho_openmp_test|omp_cmdfile|32|4
+waves|launch_cf|waves_cmdfile|40|1|8
+nodes|launch_cf|waves_cmdfile|100|1|36
+sync waves|sync_waves_test|waves_cmdfile|40|1|8|sync
+waves option|waves_option_test|waves_cmdfile|24|1|8
 EOF
             ;;
     esac
@@ -87,7 +100,16 @@ count_non_comment_non_empty_lines ()
 # one tab-separated record per PBS output file in the current directory,
 # newest first:
 #   name seq rank idx N spn thr done nerr steps first_error file took
-# (fields not reported by the job are "-")
+#   at_once max_running finished failed sync early command_file succeeded
+# (fields not reported by the job are "-").  command_file is the name of the
+# command file the job ran, without its directory, and succeeded lists the
+# steps that finished with exit status 0, numbered as in the command file of
+# the original job: a step of a "launch_cf --rerun" job reports the log it
+# writes, which is named for its original step.  max_running is the most steps
+# launched but not yet reported finished, read in the order the job wrote them;
+# failed lists "step:exit status" for each step that exited with an error.
+# sync is 1 if the job reports synchronized waves, and early counts the waves
+# after the first that started while a step of an earlier wave still ran.
 scan_outputs ()
 {
     ls -t 2>/dev/null | grep -E '\.o[0-9]+(\.[0-9]+)?$' | awk '
@@ -102,6 +124,8 @@ scan_outputs ()
         idx = (np > 1) ? p[2] : "-"
 
         N = "-"; spn = "-"; thr = "-"; done = 0; nerr = 0; steps = ""; err = "-"; took = 0
+        at_once = "-"; running = 0; maxrun = 0; fin = ""; failed = ""; sync = 0; nlaunched = 0; early = 0
+        cf = "-"; ok = ""
         while ((getline line < f) > 0) {
             if (index(line, "(#steps/node) x (#threads/step) = ") == 1) {
                 split(substr(line, 35), t, " x ")
@@ -112,8 +136,25 @@ scan_outputs ()
                 N = substr(line, 16, RLENGTH-15) + 0
             if (line ~ /^n_total_steps: / && match(line, /PBS_ARRAY_INDEX=[0-9]+/))
                 idx = substr(line, RSTART+16, RLENGTH-16) + 0
-            if (match(line, / launching step [0-9]+:/))
+            if (match(line, /^\(#steps at once\) = [0-9]+/))
+                at_once = substr(line, 20, RLENGTH-19) + 0
+            if (line ~ /^waves: synchronized/) sync = 1
+            if (line ~ /^command_file: /) { n = split(line, t, "/"); cf = t[n] }
+            if (match(line, / launching step [0-9]+:/)) {
                 steps = steps "," (substr(line, RSTART+16, RLENGTH-17) + 0)
+                # the first step of each wave after the first
+                if (at_once != "-" && nlaunched > 0 && nlaunched % at_once == 0 && running > 0) early++
+                nlaunched++
+                if (++running > maxrun) maxrun = running
+            }
+            if (match(line, / finished  step [0-9]+: exit status [0-9]+/)) {
+                split(substr(line, RSTART+16, RLENGTH-16), t, ": exit status ")
+                fin = fin "," (t[1] + 0)
+                if (t[2] + 0 != 0) failed = failed "," (t[1] + 0) ":" (t[2] + 0)
+                else if (match(line, /, output in step-[0-9]+\.out$/)) ok = ok "," (substr(line, RSTART + 17, RLENGTH - 21) + 0)
+                else ok = ok "," (t[1] + 0)
+                running--
+            }
             if (line ~ /^Done: PBS_ARRAY_INDEX=/) {
                 done = 1
                 if (match(line, /took [0-9]+ seconds/))
@@ -126,7 +167,9 @@ scan_outputs ()
         }
         close(f)
         if (idx == "-") idx = 0
-        print name, seq, NR, idx, N, spn, thr, done, nerr, (steps == "" ? "-" : steps), err, f, took
+        print name, seq, NR, idx, N, spn, thr, done, nerr, (steps == "" ? "-" : steps), err, f, took, \
+            at_once, maxrun, (fin == "" ? "-" : substr(fin, 2)), (failed == "" ? "-" : substr(failed, 2)), sync, early, \
+            cf, (ok == "" ? "-" : substr(ok, 2))
     }'
 }
 
@@ -136,8 +179,13 @@ report ()
 {
     local status="${1}" label="${2}" detail="${3}" p
     printf ' %-11s %-20s %s\n' "[${status}]" "${label}" "${detail}"
+    # a problem indented with spaces continues the one before it, e.g. a command
     for p in "${problems[@]}"; do
-        printf '        - %s\n' "${p}"
+        if [ "${p:0:1}" = " " ]; then
+            printf '        %s\n' "${p}"
+        else
+            printf '        - %s\n' "${p}"
+        fi
     done
     case "${status}" in
         "PASS") npass=$((npass + 1)) ;;
@@ -168,11 +216,100 @@ stopped_by_scheduler ()
 }
 
 #------------------------------------------------------------------
+# a test's job ${2} (job name ${1}, command file ${3}, ${4} steps), preempted
+# part way, may have had the steps it did not finish run by "launch_cf
+# --rerun": by a job of the command file <command file>.${2}.rerun, the steps
+# that did not succeed in that by <command file>.<that job>.rerun, and so on.
+# Prints:
+#   <steps of job ${2} that did not succeed> <of those, how many a rerun
+#   job ran to exit status 0> <the rerun jobs, comma-separated, or "-">
+#   <the newest of them, or ${2}>
+rerun_coverage ()
+{
+    awk -F'\t' -v name="${1}" -v seq="${2}" -v cf="${3}" -v N="${4}" '
+        { rec[NR] = $0; nrec = NR }
+        END {
+            # the steps the test job itself ran to exit status 0
+            for (r = 1; r <= nrec; r++) {
+                split(rec[r], f, "\t")
+                if (f[1] == name && f[2] == seq && f[21] != "-") { n = split(f[21], s, ","); for (i = 1; i <= n; i++) ok[s[i] + 0] = 1 }
+            }
+            for (i = 1; i <= N; i++) if (!(i in ok)) need[i] = 1
+            # follow the chain of rerun jobs, oldest first
+            chain[seq] = 1; jobs = ""; newest = seq
+            do {
+                added = 0
+                for (r = nrec; r >= 1; r--) {
+                    split(rec[r], f, "\t")
+                    if (f[2] in chain) continue
+                    if (match(f[20], /\.[0-9]+\.rerun$/) && substr(f[20], 1, RSTART - 1) == cf && (substr(f[20], RSTART + 1, RLENGTH - 7) in chain)) {
+                        chain[f[2]] = 1; added = 1
+                        jobs = jobs "," f[2]; newest = f[2]
+                    }
+                }
+            } while (added)
+            for (r = 1; r <= nrec; r++) {
+                split(rec[r], f, "\t")
+                if (f[2] != seq && (f[2] in chain) && f[21] != "-") { n = split(f[21], s, ","); for (i = 1; i <= n; i++) rerun_ok[s[i] + 0] = 1 }
+            }
+            nneed = 0; ncovered = 0
+            for (i in need) { nneed++; if (i in rerun_ok) ncovered++ }
+            print nneed, ncovered, (jobs == "" ? "-" : substr(jobs, 2)), newest
+        }' "${records}"
+}
+
+#------------------------------------------------------------------
+# the "launch_cf --rerun" command that runs the steps job ${6} did not finish:
+# a test's job ${7}, or the newest rerun job of it (${7} defaults to ${6}).
+# The options are those the test was submitted with, from the job script
+# launch_cf generated for it: the newest one in this directory for the test's
+# job name ${1}, command file ${2}, total steps ${3}, steps/node ${4} and
+# threads/step ${5}, written before the first output of job ${7}.  Prints
+# the command to run from this directory, or nothing if there is no such script.
+rerun_command ()
+{
+    local name="${1}" cf="${2}" N="${3}" spn="${4}" thr="${5}" seq="${6}" test_seq="${7:-${6}}" first f call
+    first=$(ls -tr "${name}".o${test_seq} "${name}".o${test_seq}.* 2>/dev/null | head -1)
+    [ -n "${first}" ] || return 0
+    for f in $(ls -t ./*.pbs 2>/dev/null); do
+        [ "${f}" -nt "${first}" ] && continue
+        call=$(awk -v name="${name}" -v cf="${cf}" -v N="${N}" -v spn="${spn}" -v thr="${thr}" '
+            /^#PBS -N / { if ($3 == name) ok_name = 1 }
+            /^#   command file    : / { n = split($NF, p, "/"); ok_cf = (p[n] == cf) }
+            /^#   total steps     : / { ok_N = ($NF == N) }
+            /^#   steps \/ node    : / { ok_spn = ($NF == spn) }
+            /^#   threads \/ step  : / { ok_thr = ($NF == thr) }
+            /^#   launch_cf call  : / { call = substr($0, 23) }
+            /^#----------------------------------------------------------------------------$/ && call != "" { exit }
+            END { if (ok_name && ok_cf && ok_N && ok_spn && ok_thr && call != "") print call }' "${f}")
+        [ -n "${call}" ] && break
+    done
+    [ -n "${call}" ] || return 0
+
+    # the options of that call, less those that name the script, keep it
+    # from being submitted, or rerun another job, and less the command file:
+    # --rerun takes that from the output of the job it reruns, which for a
+    # rerun job is not the test's command file.
+    echo "${call}" | awk -v launch_cf="$(readlink -f "${SCRIPTDIR}/../bin/launch_cf")" -v seq="${seq}" -v cf="${cf}" '{
+        out = launch_cf
+        for (i = 2; i <= NF; i++) {
+            if ($i == "--dryrun" || $i == "--dry-run") continue
+            if ($i == cf || $i ~ ("/" cf "$")) continue
+            if ($i == "--script" || $i == "--script-name" || $i == "--rerun") { i++; continue }
+            out = out " " $i
+        }
+        print out " --rerun " seq
+    }'
+}
+
+#------------------------------------------------------------------
 check_test ()
 {
-    local label="${1}" name="${2}" cf="${3}" spn="${4}" thr="${5}"
-    local N nsub seq others detail logdir d server jobid answer
+    local label="${1}" name="${2}" cf="${3}" spn="${4}" thr="${5}" at_once="${6}" sync="${7}"
+    local N nsub seq others detail logdir d server jobid answer rerun
+    local nneed ncovered rerun_jobs newest
     local nfiles nmiss notdone stopped nerr err took miss smiss_done smiss_stopped sdup nolog
+    local maxrun wrong_at_once nofinish nfailed failed wrong_sync early
     local nconfirmed=0 nunknown=0
     problems=()
 
@@ -180,6 +317,7 @@ check_test ()
     N=$(count_non_comment_non_empty_lines "${cf}")
     [ "${spn}" = "all" ] && spn=${N}
     nsub=$(( (N + spn - 1) / spn ))
+    [ -z "${at_once}" -o "${at_once:-0}" -gt ${spn} ] && at_once=${spn}
 
     # the newest job that ran this test (records are newest first)
     read -r seq others <<< "$(awk -F'\t' -v name="${name}" -v N=${N} -v spn=${spn} -v thr=${thr} '
@@ -202,9 +340,13 @@ check_test ()
 
     # summarize all of this job's output files, together with the step logs.
     # Steps missing from a subjob that stopped part way are counted apart from
-    # those missing from a subjob that claims to be done.
-    IFS=$'\t' read -r nfiles nmiss notdone stopped nerr err took miss smiss_done smiss_stopped sdup nolog <<< "$(awk -F'\t' \
-        -v name="${name}" -v seq=${seq} -v N=${N} -v spn=${spn} -v nsub=${nsub} -v haslogs=$([ -n "${logdir}" ] && echo 1 || echo 0) '
+    # those missing from a subjob that claims to be done.  So are steps that
+    # never reported finishing, when the job reports steps finishing at all.
+    IFS=$'\t' read -r nfiles nmiss notdone stopped nerr err took miss smiss_done smiss_stopped sdup nolog \
+                     maxrun wrong_at_once nofinish nfailed failed wrong_sync early <<< "$(awk -F'\t' \
+        -v name="${name}" -v seq=${seq} -v N=${N} -v spn=${spn} -v nsub=${nsub} -v at_once=${at_once} \
+        -v sync=$([ "${sync}" = "sync" ] && echo 1 || echo 0) \
+        -v haslogs=$([ -n "${logdir}" ] && echo 1 || echo 0) '
         # first input: the step log directory listing, which may be empty
         FILENAME == ARGV[1] { if ($0 ~ /^step-[0-9]+\.out$/) haslog[substr($0, 6, length($0) - 9) + 0] = 1; next }
         $1 == name && $2 == seq {
@@ -214,6 +356,13 @@ check_test ()
             if ($13 + 0 > took) took = $13 + 0
             n = split($10, s, ",")
             for (i = 1; i <= n; i++) if (s[i] != "" && s[i] != "-") cnt[s[i] + 0]++
+            if ($15 + 0 > maxrun) maxrun = $15 + 0
+            if ($14 != "-" && $14 + 0 != at_once) wrong_at_once++
+            if ($16 != "-") { n = split($16, s, ","); for (i = 1; i <= n; i++) fin[s[i] + 0] = 1; hasfin = 1 }
+            if ($17 != "-") { n = split($17, s, ","); for (i = 1; i <= n; i++) { nfailed++; if (nfailed <= 5) failed = failed (failed == "" ? "" : ",") s[i] } }
+            # a subjob that reports its layout should report sync as the test runs it
+            if ($5 != "-" && $18 + 0 != sync) wrong_sync++
+            early += $19
         }
         END {
             for (i = 0; i < nsub; i++)
@@ -224,24 +373,45 @@ check_test ()
                 if (i in cnt) {
                     if (cnt[i] > 1) sdup++
                     if (haslogs && !(i in haslog)) nolog++
+                    if (hasfin && !(i in fin) && !(sub_idx in stop)) nofinish++
                 }
                 else if (sub_idx in stop) smiss_stopped++
                 else if (sub_idx in have) smiss_done++
             }
-            printf "%d\t%d\t%d\t%s\t%d\t%s\t%d\t%s\t%d\t%d\t%d\t%d\n", nfiles, nmiss, notdone, (stopped == "" ? "-" : stopped),
-                nerr, (err == "" ? "-" : err), took, (miss == "" ? "-" : miss), smiss_done, smiss_stopped, sdup, nolog
+            if (nfailed > 5) failed = failed ",..."
+            printf "%d\t%d\t%d\t%s\t%d\t%s\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\n", nfiles, nmiss, notdone, (stopped == "" ? "-" : stopped),
+                nerr, (err == "" ? "-" : err), took, (miss == "" ? "-" : miss), smiss_done, smiss_stopped, sdup, nolog,
+                maxrun, wrong_at_once, nofinish, nfailed, (failed == "" ? "-" : failed), wrong_sync, early
         }' <(ls "${logdir:-/nonexistent}" 2>/dev/null) "${records}")"
 
     # never let a summary we could not compute pass as a clean result
-    [ -n "${sdup}" ] || { problems=( "cannot summarize the output of job ${seq}" ); report FAIL "${label}" ""; return; }
+    [ -n "${early}" ] || { problems=( "cannot summarize the output of job ${seq}" ); report FAIL "${label}" ""; return; }
 
-    detail="job ${seq} (${name}): $((nsub - nmiss))/${nsub} subjobs, ${N} steps, ${spn} steps/node x ${thr} threads/step, longest subjob ${took}s"
+    detail="job ${seq} (${name}): $((nsub - nmiss))/${nsub} subjobs, ${N} steps, ${spn} steps/node x ${thr} threads/step"
+    [ ${at_once} -lt ${spn} ] && detail="${detail}, ${at_once} at once in $(( (spn + at_once - 1) / at_once ))${sync:+ synchronized} waves"
+    detail="${detail}, longest subjob ${took}s"
     [ ${others} -gt 0 ] && detail="${detail}, ${others} older run(s) ignored"
 
     # problems reported by the subjobs themselves
     [ ${nerr} -gt 0 ]       && problems+=( "${nerr} error(s) in the PBS output, first: ${err}" )
     [ ${sdup} -gt 0 ]       && problems+=( "${sdup} step(s) were launched more than once" )
     [ ${smiss_done} -gt 0 ] && problems+=( "${smiss_done} step(s) were never launched by subjobs that finished" )
+    [ ${nofinish} -gt 0 ]   && problems+=( "${nofinish} launched step(s) never reported finishing" )
+    [ ${nfailed} -gt 0 ]    && problems+=( "${nfailed} step(s) exited with an error (step:exit status): ${failed}" )
+
+    # how many steps each node ran at once
+    [ ${wrong_at_once} -gt 0 ] && problems+=( "${wrong_at_once} subjob(s) report running other than ${at_once} steps at once" )
+    [ ${maxrun} -gt ${at_once} ] && problems+=( "up to ${maxrun} steps ran at once on a node, more than the ${at_once} requested" )
+    [ ${at_once} -lt ${spn} -a ${maxrun} -lt ${at_once} ] && \
+        problems+=( "at most ${maxrun} steps ran at once on a node, so its ${at_once} slots were never all in use" )
+
+    # with --sync-waves, no wave may start before the one before it has finished
+    if [ "${sync}" = "sync" ]; then
+        [ ${wrong_sync} -gt 0 ] && problems+=( "${wrong_sync} subjob(s) do not report synchronized waves" )
+        [ ${early} -gt 0 ]      && problems+=( "${early} wave(s) started while a step of the wave before still ran" )
+    else
+        [ ${wrong_sync} -gt 0 ] && problems+=( "${wrong_sync} subjob(s) report synchronized waves, which this test does not request" )
+    fi
 
     # the per-step logs
     if [ -n "${logdir}" ]; then
@@ -285,8 +455,24 @@ check_test ()
         else
             problems=( "${stop_summary}, with no error: most likely preempted, confirm with \"qstat -xf ${seq}[${stopped%%,*}]${server}\" on the system" )
         fi
+
+        # did "launch_cf --rerun" jobs run the steps it did not finish?
+        read -r nneed ncovered rerun_jobs newest <<< "$(rerun_coverage "${name}" "${seq}" "${cf}" "${N}")"
+        if [ ${nmiss} -eq 0 -a "${rerun_jobs}" != "-" -a ${ncovered} -eq ${nneed} ]; then
+            problems+=( "launch_cf --rerun job(s) ${rerun_jobs//,/, } ran the ${nneed} steps it did not finish, all to exit status 0" )
+            report PASS "${label}" "${detail}"
+            return
+        fi
+        [ "${rerun_jobs}" != "-" ] && \
+            problems+=( "launch_cf --rerun job(s) ${rerun_jobs//,/, } ran ${ncovered} of the ${nneed} steps it did not finish to exit status 0, so ${nneed} - ${ncovered} = $((nneed - ncovered)) are still to run" )
         [ ${nmiss} -gt 0 ] && problems+=( "no output yet from subjob(s) ${miss} (still queued or running?)" )
-        problems+=( "rerun the test to complete it" )
+        rerun=$(rerun_command "${name}" "${cf}" "${N}" "${spn}" "${thr}" "${newest}" "${seq}")
+        if [ -n "${rerun}" ]; then
+            problems+=( "to run just the steps still to run, once the job has finished, run these two commands:" "    cd $(pwd)" "    ${rerun}" )
+            problems+=( "or rerun the test" )
+        else
+            problems+=( "rerun the test, or run the steps still to run with the test's options and \"--rerun ${newest}${server}\"" )
+        fi
         report PREEMPTED "${label}" "${detail}"
     elif [ ${nmiss} -gt 0 ]; then
         problems=( "no output yet from subjob(s) ${miss} (still queued or running?)" )
@@ -432,8 +618,8 @@ else
     echo
 
     selected_jobs=()
-    while IFS='|' read -r label name cf spn thr <&3; do
-        check_test "${label}" "${name}" "${cf}" "${spn}" "${thr}"
+    while IFS='|' read -r label name cf spn thr at_once sync <&3; do
+        check_test "${label}" "${name}" "${cf}" "${spn}" "${thr}" "${at_once}" "${sync}"
     done 3< <(expected_tests ${suite})
 
     unidentified=$(check_unidentified)
